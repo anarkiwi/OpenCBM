@@ -12,4 +12,5 @@ EXPORTS
     opencbm_plugin_srq_write_n
     opencbm_plugin_srq2_read_n
     opencbm_plugin_srq2_write_n
+    opencbm_plugin_srq2_stream
     opencbm_plugin_xum1541_set_timeout

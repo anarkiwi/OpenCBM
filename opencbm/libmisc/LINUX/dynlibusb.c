@@ -54,6 +54,11 @@ usb_dll_t usb = {
     .free_device_list = libusb_free_device_list,
     .get_bus_number = libusb_get_bus_number,
     .get_device_address = libusb_get_device_address,
+    .alloc_transfer = libusb_alloc_transfer,
+    .free_transfer = libusb_free_transfer,
+    .submit_transfer = libusb_submit_transfer,
+    .cancel_transfer = libusb_cancel_transfer,
+    .handle_events_timeout_completed = libusb_handle_events_timeout_completed,
 #elif HAVE_LIBUSB0
     .open = usb_open,
     .close = usb_close,

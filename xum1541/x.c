@@ -650,6 +650,192 @@ SRQ_RX(8)
 SRQ_TX(16)
 SRQ_TX(8)
 
+/*
+ * SRQ streaming receive (firmware v12, 1571 at 2 MHz, nybulah drive/stream.s):
+ * after go and the first fall (as srq_rx) the drive sends bytes unprompted,
+ * each timed from its own first SRQ fall and sampled as srq_rx samples them;
+ * CLK asserted at bit 7's sample marks metadata. Each byte goes into the IN
+ * endpoint at once (XUM_X_STREAM in xum1541_types.h gives the framing); a
+ * bank is handed to the host when full, and a bank still waiting for the host
+ * when the next byte needs it is an overrun. After the byte, a poll at
+ * SRQ_FRAME or later must see SRQ released (else the next byte started too
+ * early: framing), and the wait for the next fall starts by SRQ_WAIT. Returns
+ * an XUM_STREAM_* code (bit 0: an ESC was left without its second byte) in
+ * the low byte and the bytes still free in the current bank in the high byte,
+ * or SRQ_NOSYNC if the first fall never came; *left counts the banks still
+ * allowed.
+ */
+__asm__(
+    /* Byte r into the IN endpoint (c free bytes in the bank, t scratch): a
+     * fresh bank must be free (else ovr), a full one goes to the host and
+     * counts down left (a pointer pair) banks, ending at end on 0. */
+    ".macro sput r, c, t, left, ue, fifo, flags, ovr, end\n"
+    "  cpi \\c, 32\n"
+    "  brne 1f\n"
+    "  lds \\t, \\ue\n"
+    "  sbrs \\t, 5\n" /* RWAL */
+    "  rjmp \\ovr\n"
+    "1: sts \\fifo, \\r\n"
+    "  dec \\c\n"
+    "  brne 2f\n"
+    "  lds \\t, \\ue\n"
+    "  andi \\t, ~(\\flags) & 0xff\n"
+    "  sts \\ue, \\t\n"
+    "  ldi \\c, 32\n"
+    "  sbiw \\left, 1\n"
+    "  brne 2f\n"
+    "  rjmp \\end\n"
+    "2:\n"
+    ".endm\n");
+
+static __attribute__((noinline)) uint16_t srq_stream8(uint16_t n, uint8_t c,
+                                                      uint16_t *left) {
+  uint8_t s, s0, b, t, code;
+  uint16_t l = *left;
+  __asm__ volatile(
+      "rjmp 15f\n"
+      "14: rjmp 2f\n"
+      "15: xsync %A[n], %A[n], %B[n], %[g], 14b, %[pin], %[port], 5, 0\n"
+      "21: cbi %[port], 0\n"
+      "  xdelay %[d0]\n"
+      "  srqin %[s0], %[b], 7, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 6, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 5, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 4, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 3, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 2, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 1, %[dj], %[pin]\n"
+      "  srqin %[s], %[b], 0, 0, %[pin]\n"
+      "  wdr\n"
+      "  sbrs %[s0], 1\n" /* CLK asserted: metadata */
+      "  rjmp 30f\n"
+      "  tst %[b]\n"
+      "  brne 31f\n"
+      "  sput __zero_reg__, %[c], %[t], %[l], %[ue], %[fifo], %[in], 40f, 46f\n"
+      "  sput __zero_reg__, %[c], %[t], %[l], %[ue], %[fifo], %[in], 41f, 45f\n"
+      "  rjmp 32f\n"
+      "31: sput %[b], %[c], %[t], %[l], %[ue], %[fifo], %[in], 40f, 45f\n"
+      "  rjmp 32f\n"
+      "30: sput __zero_reg__, %[c], %[t], %[l], %[ue], %[fifo], %[in], 40f, "
+      "46f\n"
+      "  sput %[b], %[c], %[t], %[l], %[ue], %[fifo], %[in], 41f, 45f\n"
+      "  mov %[t], %[b]\n"
+      "  andi %[t], 0xf3\n"
+      "  cpi %[t], 0x40\n" /* END metadata */
+      "  breq 43f\n"
+      "32: sbis %[pin], 5\n" /* SRQ_FRAME or later: released */
+      "  rjmp 42f\n"
+      "  ldi %A[n], lo8(%[wn])\n"
+      "  ldi %B[n], hi8(%[wn])\n"
+      "22: sbiw %A[n], 1\n" /* SRQ_WAIT or earlier */
+      "  breq 44f\n"
+      "  sbic %[pin], 5\n"
+      "  rjmp 22b\n"
+      "  rjmp 21b\n"
+      "40: ldi %[code], %[ovr]\n"
+      "  rjmp 3f\n"
+      "41: ldi %[code], %[ovr] | 1\n"
+      "  rjmp 3f\n"
+      "42: ldi %[code], %[frm]\n"
+      "  rjmp 3f\n"
+      "43: ldi %[code], %[done]\n"
+      "  rjmp 3f\n"
+      "44: ldi %[code], %[tmo]\n"
+      "  rjmp 3f\n"
+      "45: ldi %[code], %[trn]\n"
+      "  rjmp 3f\n"
+      "46: ldi %[code], %[trn] | 1\n"
+      "  rjmp 3f\n"
+      "2: ldi %[code], %[nosync]\n"
+      "3:\n"
+      : [n] "+w"(n), [c] "+d"(c), [l] "+e"(l), [s] "=&r"(s), [s0] "=&r"(s0),
+        [b] "=&r"(b), [t] "=&d"(t), [code] "=&d"(code)
+      : [pin] "I"(_SFR_IO_ADDR(PIND)), [port] "I"(_SFR_IO_ADDR(PORTD)),
+        [fifo] "n"(_SFR_MEM_ADDR(UEDATX)), [ue] "n"(_SFR_MEM_ADDR(UEINTX)),
+        [in] "n"(_BV(TXINI) | _BV(FIFOCON)), [g] "i"(X_GRACE * 8 / X_POLL),
+        [wn] "i"(SRQ_STREAM_POLLS), [nosync] "n"(SRQ_NOSYNC),
+        [ovr] "n"(XUM_STREAM_OVERRUN), [frm] "n"(XUM_STREAM_FRAMING),
+        [done] "n"(XUM_STREAM_DONE), [tmo] "n"(XUM_STREAM_TIMEOUT),
+        [trn] "n"(XUM_STREAM_TRUNCATED),
+        [d0] "i"(SRQ_SAMPLE(0, 8) - X_FOUND - 2),
+        [dj] "i"(SRQ_SAMPLE(1, 8) - SRQ_SAMPLE(0, 8) - 3)
+      : "r23", "memory");
+  *left = l;
+  return code | (uint16_t)c << 8;
+}
+
+/* Drive gone quiet after ATN: SRQ released this many polls in a row. */
+#define STREAM_QUIET 1000
+/* Most polls (1 us apart or more) of ATN held. */
+#define STREAM_ATN 50000U
+
+/* ATN stops the drive's stream (drive/stream.s checks it); release it once SRQ
+ * has stayed released STREAM_QUIET polls, or after STREAM_ATN. */
+static void stream_stop(void) {
+  uint16_t quiet = 0, n;
+
+  iec_set(IO_ATN);
+  for (n = 0; quiet < STREAM_QUIET && n < STREAM_ATN; n++) {
+    wdt_reset();
+    DELAY_US(1);
+    quiet = iec_get(IO_SRQ) ? 0 : quiet + 1;
+  }
+  iec_release(IO_ATN);
+}
+
+/* One more output byte once the current bank is writable. */
+static bool stream_put(uint8_t b) {
+  while (!Endpoint_IsReadWriteAllowed())
+    if (!TimerWorker())
+      return false;
+  Endpoint_Write_Byte(b);
+  if (Endpoint_BytesInEndpoint() == XB_BANK)
+    Endpoint_ClearIN();
+  return true;
+}
+
+/*
+ * Streaming receive (2 MHz only) of at most units * XUM_STREAM_UNIT output
+ * bytes, the last bank kept for the trailer: go and the first fall as
+ * srq_read_loop, then srq_stream8 with interrupts masked; a stop other than
+ * the drive's END holds ATN to end the drive's stream. Then the trailer (ESC
+ * and the code, or the code alone after a dangling ESC) and a short packet.
+ * No status block follows.
+ */
+void srq_stream_loop(uint16_t units, uint8_t flags) {
+  uint32_t banks = (uint32_t)units * (XUM_STREAM_UNIT / XB_BANK) - 1;
+  uint16_t left = banks > 0xffff ? 0xffff : banks, r = SRQ_NOSYNC;
+  uint8_t code;
+
+  usbInitIo(0, ENDPOINT_DIR_IN);
+  iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+  if (units == 0 || !(flags & XUM_X_2MHZ))
+    left = 0;
+  while (left != 0 && (uint8_t)r == SRQ_NOSYNC && TimerWorker()) {
+    if (!Endpoint_IsReadWriteAllowed())
+      continue;
+    cli();
+    iec_set(IO_CLK);
+    r = srq_stream8(X_SLICE, XB_BANK - Endpoint_BytesInEndpoint(), &left);
+    sei();
+  }
+  iec_release(IO_CLK);
+  code = (uint8_t)r == SRQ_NOSYNC ? XUM_STREAM_TIMEOUT : (uint8_t)r;
+  if ((code & ~1) != XUM_STREAM_DONE)
+    stream_stop();
+  if ((code & 1) || stream_put(XUM_STREAM_ESC))
+    stream_put(code & ~1);
+  if (Endpoint_BytesInEndpoint() != 0)
+    Endpoint_ClearIN();
+  else {
+    while (!Endpoint_IsReadWriteAllowed() && TimerWorker())
+      ;
+    Endpoint_ClearIN();
+  }
+  Set_usbDataLen(0);
+  usbIoDone();
+}
+
 uint16_t srq_read_loop(uint16_t len, uint8_t flags, bool *ok) {
   uint16_t n = 0;
   uint8_t k, c, r = 0;
@@ -754,6 +940,13 @@ uint16_t srq_read_loop(uint16_t len, uint8_t flags, bool *ok) {
 
 uint16_t srq_write_loop(uint16_t len, uint8_t flags, bool *ok) {
   return x_write_loop(len, flags, ok);
+}
+
+void srq_stream_loop(uint16_t units, uint8_t flags) {
+  usbInitIo(0, ENDPOINT_DIR_IN);
+  (void)units;
+  (void)flags;
+  usbIoDone();
 }
 
 #endif

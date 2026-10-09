@@ -70,6 +70,12 @@ struct usb_dll_s {
     uint8_t (LIBUSB_APIDECL *get_device_address)(libusb_device *dev);
     libusb_device *(LIBUSB_APIDECL *get_device)(libusb_device_handle *devh);
 
+    struct libusb_transfer *(LIBUSB_APIDECL *alloc_transfer)(int iso_packets);
+    void (LIBUSB_APIDECL *free_transfer)(struct libusb_transfer *transfer);
+    int (LIBUSB_APIDECL *submit_transfer)(struct libusb_transfer *transfer);
+    int (LIBUSB_APIDECL *cancel_transfer)(struct libusb_transfer *transfer);
+    int (LIBUSB_APIDECL *handle_events_timeout_completed)(libusb_context *ctx, struct timeval *tv, int *completed);
+
 #elif HAVE_LIBUSB0
 
     /*

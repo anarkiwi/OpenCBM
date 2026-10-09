@@ -515,8 +515,8 @@ xum1541_control(struct opencbm_usb_handle *HandleXum1541, int in,
  * Bulk transfer timeout: the firmware idle timeout plus time for a deferred
  * reset and the data itself. Tape transfers wait on the user, so never expire.
  */
-static unsigned int
-xum1541_timeout(BOOL isTapeCmd, size_t bytes)
+unsigned int
+xum1541_timeout(int isTapeCmd, size_t bytes)
 {
     if (isTapeCmd || fw_timeout_ms == 0)
         return LIBUSB_NO_TIMEOUT;

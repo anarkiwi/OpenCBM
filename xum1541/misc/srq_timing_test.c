@@ -2,7 +2,9 @@
  * Host check of the SRQ schedule (x_timing.h): every read sample and the next
  * byte's first poll inside their windows, the poll count within 8 bits and
  * covering the latest next byte, and the write bit and byte periods meeting
- * DATA set-up, hold and the drive's receive loop with SRQ_SIGMA to spare.
+ * DATA set-up, hold and the drive's receive loop with SRQ_SIGMA to spare; for
+ * the 2 MHz stream, the frame poll window open and the fall wait's polls
+ * outlasting the drive's longest metadata gap.
  * usage: cc -I.. srq_timing_test.c && ./a.out
  */
 #include <stdio.h>
@@ -40,8 +42,20 @@ static int schedule(int f) {
   return bad;
 }
 
+/* drive/stream.s: longest gap between written bytes, a sync loop run of
+ * SYNC_CONT plus an index edge, under 256 cycles (its timestamp range). */
+#define STREAM_GAP 256
+
+static int stream(void) {
+  int bad = check("stream frame window", 8, SRQ_WAIT(8) - SRQ_FRAME(8));
+  bad +=
+      check("stream fall polls", 8,
+            (int)(SRQ_STREAM_POLLS * (unsigned long)X_POLL / 8) - STREAM_GAP);
+  return bad + check("stream polls fit", 8, 0xffff - (int)SRQ_STREAM_POLLS);
+}
+
 int main(void) {
-  int bad = schedule(16) + schedule(8);
+  int bad = schedule(16) + schedule(8) + stream();
 
   printf("sigma %d, bit %d/%d clocks\n%s\n", SRQ_SIGMA, SRQ_BIT(16), SRQ_BIT(8),
          bad ? "FAIL" : "ok");

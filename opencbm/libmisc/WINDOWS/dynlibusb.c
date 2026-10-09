@@ -84,6 +84,11 @@ int dynlibusb_init(void) {
         READ(free_device_list);
         READ(get_bus_number);
         READ(get_device_address);
+        READ(alloc_transfer);
+        READ(free_transfer);
+        READ(submit_transfer);
+        READ(cancel_transfer);
+        READ(handle_events_timeout_completed);
 #elif HAVE_LIBUSB0
         READ(open);
         READ(close);

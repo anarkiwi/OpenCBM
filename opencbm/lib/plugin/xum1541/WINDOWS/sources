@@ -20,6 +20,7 @@ SOURCES=../archlib.c \
 	../xum1541.c \
 	../s1_s2_pp.c \
 	../parburst.c \
+	../stream.c \
 	dllmain.c \
 	install.c \
 	opencbm-xum1541.rc

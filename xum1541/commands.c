@@ -752,6 +752,11 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
             ret = rwStatus(request[1], status, count, count == len);
             break;
         case XUM1541_X:
+            if ((request[1] & XUM_X_STREAM) == XUM_X_STREAM) {
+                srq_stream_loop(len, XUM_RW_FLAGS(request[1]));
+                ret = 0;
+                break;
+            }
             count = (request[1] & XUM_X_SRQ     ? srq_read_loop
                      : request[1] & XUM_X_BURST ? xb_read_loop
                                                 : x_read_loop)(

@@ -120,6 +120,10 @@ SOURCE=..\s1_s2_pp.c
 # End Source File
 # Begin Source File
 
+SOURCE=..\stream.c
+# End Source File
+# Begin Source File
+
 SOURCE=..\xum1541.c
 # End Source File
 # End Group

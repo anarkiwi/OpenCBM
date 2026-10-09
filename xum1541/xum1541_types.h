@@ -15,7 +15,7 @@
 #define XUM1541_PID                 0x0504
 
 // XUM1541_INIT reports this versions
-#define XUM1541_VERSION             11
+#define XUM1541_VERSION             12
 #define XUM1541_MINIMUM_COMPATIBLE_VERSION 7
 
 // USB parameters for descriptor configuration
@@ -52,8 +52,10 @@
 #endif
 #define XUM1541_CAP_X               0x20 // X protocol
 #define XUM1541_CAP_SRQ             0x40 // SRQ fast serial (version 11)
+#define XUM1541_CAP_STREAM          0x80 // SRQ streaming receive (version 12)
 #ifdef X_SUPPORT
-#define XUM1541_CAP_X_FW            (XUM1541_CAP_X | XUM1541_CAP_SRQ)
+#define XUM1541_CAP_X_FW            (XUM1541_CAP_X | XUM1541_CAP_SRQ | \
+                                     XUM1541_CAP_STREAM)
 #else
 #define XUM1541_CAP_X_FW            0
 #endif
@@ -169,6 +171,21 @@
 #define XUM_X_2MHZ                  (1 << 0)
 #define XUM_X_BURST                 (1 << 1) // burst X (version 10)
 #define XUM_X_SRQ                   (1 << 2) // SRQ fast serial (version 11)
+/*
+ * SRQ streaming receive (version 12, with XUM_X_2MHZ): the length is the most
+ * output allowed in 64-byte units. The drive's bytes arrive unframed, each
+ * timed from its own first SRQ fall; a byte with CLK asserted at its bit 7 is
+ * metadata. Output: a byte as itself, a data $00 as ESC $00, metadata m as ESC
+ * m, then ESC and an XUM_STREAM_* code, ended by a short packet; no status.
+ */
+#define XUM_X_STREAM                (XUM_X_SRQ | XUM_X_BURST)
+#define XUM_STREAM_ESC              0x00
+#define XUM_STREAM_UNIT             64
+#define XUM_STREAM_DONE             0x80 // drive sent its END metadata
+#define XUM_STREAM_OVERRUN          0x84 // host left both IN banks full
+#define XUM_STREAM_FRAMING          0x88 // a byte started before SRQ rose
+#define XUM_STREAM_TIMEOUT          0x8c // no byte within the slice
+#define XUM_STREAM_TRUNCATED        0x90 // length reached
 
 // Flags for use with write and XUM1541_CBM protocol
 #define XUM_WRITE_TALK              (1 << 0)

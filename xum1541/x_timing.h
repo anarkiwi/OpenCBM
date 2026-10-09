@@ -56,4 +56,19 @@
 #define SRQ_LOW(f) ((SRQ_BIT(f) - (f)) / 2)
 #define SRQ_HIGH(f) (SRQ_BIT(f) - SRQ_LOW(f))
 
+/*
+ * Stream (firmware v12, 2 MHz, f = 8): the drive writes a byte SRQ_PERIOD or
+ * more cycles after the previous one, so the next byte's first fall comes
+ * (SRQ_PERIOD - 1) * f or more clocks after this one's (one cycle of timer
+ * phase), at most X_POLL before its detection. After a byte the adapter's poll
+ * that must see SRQ released comes once the last rise has settled; its first
+ * poll for the next fall no later than that fall.
+ */
+#define SRQ_PERIOD 40
+#define SRQ_FRAME(f) (SRQ_LAST * (f) + X_RISE)
+#define SRQ_WAIT(f) ((SRQ_PERIOD - 1) * (f) - X_POLL)
+/* Polls (6 clocks) of the fall wait: 20 ms, over 20 SRQ_PERIODs of metadata
+ * gap in the drive's sync loop, under the host's patience. */
+#define SRQ_STREAM_POLLS (20000U * 16 / X_POLL)
+
 #endif

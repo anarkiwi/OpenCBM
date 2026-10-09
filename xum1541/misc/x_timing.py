@@ -4,7 +4,11 @@
 Steps each x_rx/x_tx, burst xb_rx/xb_tx and SRQ srq_rx/srq_tx routine from every
 detecting sbic and compares each in/out clock (and srq_rx's next-byte poll, an sbis
 seeing SRQ released) with the x.c formulas; bursts run BURST bytes and switch USB
-banks after BANK (a counter whose dec guards an lds). usage: x_timing.py ELF [x.c] (x_timing.h beside x.c is read too)
+banks after BANK (a counter whose dec guards an lds). For srq_stream8 it also takes
+every branch after the samples: the poll that must see SRQ released comes at
+SRQ_FRAME or later, the first poll for the next fall at SRQ_WAIT or earlier, and
+that wait polls every X_POLL clocks. usage: x_timing.py ELF [x.c] (x_timing.h beside
+x.c is read too)
 """
 
 import os
@@ -14,7 +18,9 @@ import sys
 
 BURST = 3
 BANK = 2
-CYCLES = {"cbi": 2, "sbi": 2, "rjmp": 2, "lds": 2, "sts": 2}
+CYCLES = {"cbi": 2, "sbi": 2, "rjmp": 2, "lds": 2, "sts": 2, "sbiw": 2}
+SKIPS = ("sbrs", "sbrc", "sbis", "sbic", "cpse")
+BRANCHES = ("breq", "brne", "brcs", "brcc", "brmi", "brpl", "brvs", "brvc")
 LINE = re.compile(
     r"\s+([0-9a-f]+):\s+(?:[0-9a-f]{2} )+\s*(\w+)\s*([^;]*)(?:;\s*0x([0-9a-f]+))?"
 )
@@ -93,7 +99,7 @@ def routines(elf):
     ).stdout
     funcs, cur = {}, None
     for line in out.splitlines():
-        m = re.match(r"[0-9a-f]+ <((?:xb?|srq)_[rt]x(?:8|16))[.\w]*>:", line)
+        m = re.match(r"[0-9a-f]+ <((?:xb?|srq)_[rt]x(?:8|16)|srq_stream8)[.\w]*>:", line)
         if m:
             cur = funcs.setdefault(m.group(1), [])
         elif cur is not None and (m := LINE.match(line)):
@@ -132,6 +138,65 @@ def run(code, start, count):
     return events
 
 
+def _step(code, at, i):
+    """(clocks, next indices) of instruction i with every branch outcome."""
+    addr, op, _, target = code[i]
+    if op == "rjmp":
+        return [(2, at[target])]
+    if op in BRANCHES:
+        return [(2, at[target]), (1, i + 1)]
+    if op in SKIPS:
+        size = code[i + 2][0] - code[i + 1][0] if i + 2 < len(code) else 2
+        return [(1 + size // 2, i + 2), (1, i + 1)]
+    return [(CYCLES.get(op, 1), i + 1)]
+
+
+def spans(code, start, t0, stop):
+    """{index: (min, max)} clocks at which every path from start (at t0) reaches an
+    instruction where stop(index) holds; paths branching backwards end there."""
+    at = {a: i for i, (a, *_) in enumerate(code)}
+    out, todo = {}, [(start, t0)]
+    while todo:
+        i, t = todo.pop()
+        if i >= len(code) or code[i][1] == "ret":
+            continue
+        if stop(i):
+            lo, hi = out.get(i, (t, t))
+            out[i] = (min(lo, t), max(hi, t))
+            continue
+        for dt, j in _step(code, at, i):
+            if j > i:
+                todo.append((j, t + dt))
+    return out
+
+
+def stream(d, code):
+    """Mismatches of srq_stream8 against x_timing.h, with the measured clocks."""
+    bad, notes = 0, []
+    want = [("in", sample(d, 2 * j * d["SRQ_U"], (2 * j + 2) * d["SRQ_U"], 8))
+            for j in range(8)]
+    det = [s for s, c in enumerate(code) if c[1] == "sbic" and code[s + 1][1] == "rjmp"]
+    for s in det:
+        got = run(code, s, 8)
+        bad += got != want
+        notes.append(f"sbic@{code[s][0]:04x} samples {got == want}")
+    last = max(i for i, c in enumerate(code) if c[1] == "in")
+    t_last = want[-1][1]
+    frames = spans(code, last + 1, t_last + 1, lambda i: code[i][1] == "sbis")
+    lo, hi = min(v[0] for v in frames.values()), max(v[1] for v in frames.values())
+    frame = 8 * 15 * d["SRQ_U"] + d["X_RISE"]
+    wait = (d["SRQ_PERIOD"] - 1) * 8 - d["X_POLL"]
+    poll = [i for i in range(len(code)) if code[i][1] == "sbic" and i > min(frames)]
+    first = spans(code, min(frames), lo, lambda i: i == poll[0])
+    sbis_ok = 2 + sum(CYCLES.get(c[1], 1) for c in code[min(frames) + 2 : poll[0]])
+    late = hi + sbis_ok
+    loop = sum(CYCLES.get(c[1], 1) for c in code[poll[0] - 2 : poll[0] + 2])
+    ok = lo >= frame and late <= wait and loop == d["X_POLL"] and first
+    notes.append(f"frame [{lo}, {hi}] >= {frame}, next poll <= {late} <= {wait}")
+    notes.append(f"wait loop {loop} clocks per poll")
+    return bad + (not ok), notes
+
+
 def main(argv):
     """Exit status 1 on any mismatch."""
     src = argv[2] if len(argv) > 2 else "x.c"
@@ -139,6 +204,11 @@ def main(argv):
     with open(src, encoding="utf-8") as fh, open(head, encoding="utf-8") as fh2:
         d, bad = defines(fh.read() + fh2.read()), 0
     for name, code in sorted(routines(argv[1]).items()):
+        if name == "srq_stream8":
+            n, notes = stream(d, code)
+            bad += n
+            print(f"{name}: {'ok' if not n else 'MISMATCH'} {'; '.join(notes)}")
+            continue
         want = expected(d, name)
         for s, c in enumerate(code):
             if c[1] == "sbic" and code[s + 2][1] == "rjmp":
