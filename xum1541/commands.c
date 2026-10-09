@@ -106,8 +106,10 @@ usbInitIo(uint16_t len, uint8_t dir)
      * minimal latency when accessing the endpoint buffers. Otherwise,
      * timing could be violated.
      */
-    while (!Endpoint_IsReadWriteAllowed())
-        ;
+    while (!Endpoint_IsReadWriteAllowed()) {
+        if (!TimerWorker())
+            return;
+    }
 }
 
 void
@@ -146,6 +148,18 @@ usbIoDone(void)
     usbDataLen = 0;
 }
 
+// Discard any transfer state and release the bus after an abort.
+void
+usbIoReset(void)
+{
+    Endpoint_ResetFIFO(XUM_BULK_IN_ENDPOINT);
+    Endpoint_ResetFIFO(XUM_BULK_OUT_ENDPOINT);
+    usbDataDir = XUM_DATA_DIR_NONE;
+    usbDataLen = 0;
+    if ((currState & XUM1541_TAPE_PRESENT) == 0)
+        iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+}
+
 int8_t
 usbSendByte(uint8_t data)
 {
@@ -157,6 +171,12 @@ usbSendByte(uint8_t data)
     }
 #endif
 
+    // Check if the current command is being aborted by the host
+    if (IoAborted()) {
+        DEBUGF(DBG_ERROR, "sndrst\n");
+        return -1;
+    }
+
     // Write data back to the host buffer for USB transfer
     Endpoint_Write_Byte(data);
     usbDataLen--;
@@ -164,14 +184,10 @@ usbSendByte(uint8_t data)
     // If the endpoint is now full, flush the block to the host
     if (!Endpoint_IsReadWriteAllowed()) {
         Endpoint_ClearIN();
-        while (!Endpoint_IsReadWriteAllowed() && !doDeviceReset)
-            ;
-    }
-
-    // Check if the current command is being aborted by the host
-    if (doDeviceReset) {
-        DEBUGF(DBG_ERROR, "sndrst\n");
-        return -1;
+        while (!Endpoint_IsReadWriteAllowed()) {
+            if (!TimerWorker())
+                return -1;
+        }
     }
 
     return 0;
@@ -195,12 +211,12 @@ usbRecvByte(uint8_t *data)
      */
     if (!Endpoint_IsReadWriteAllowed()) {
         Endpoint_ClearOUT();
-        while (!Endpoint_IsReadWriteAllowed() && !doDeviceReset)
+        while (!Endpoint_IsReadWriteAllowed() && TimerWorker())
             ;
     }
 
     // Check if the current command is being aborted by the host
-    if (doDeviceReset) {
+    if (IoAborted()) {
         DEBUGF(DBG_ERROR, "rcvrst\n");
         return -1;
     }
@@ -212,66 +228,77 @@ usbRecvByte(uint8_t *data)
     return 0;
 }
 
-static uint8_t
+static uint16_t
 ioReadLoop(ReadFn_t readFn, uint16_t len)
 {
+    uint16_t count;
     uint8_t data;
 
     usbInitIo(len, ENDPOINT_DIR_IN);
-    while (len-- != 0) {
+    for (count = 0; count != len; count++) {
         data = readFn();
-        if (usbSendByte(data) != 0)
+        if (IoAborted() || usbSendByte(data) != 0)
             break;
+        IoProgress();
     }
     usbIoDone();
-    return 0;
+    return count;
 }
 
-static uint8_t
+static uint16_t
 ioWriteLoop(WriteFn_t writeFn, uint16_t len)
 {
+    uint16_t count;
     uint8_t data;
 
     usbInitIo(len, ENDPOINT_DIR_OUT);
-    while (len-- != 0) {
+    for (count = 0; count != len; count++) {
         if (usbRecvByte(&data) != 0)
             break;
         writeFn(data);
+        if (IoAborted())
+            break;
+        IoProgress();
     }
     usbIoDone();
-    return 0;
+    return count;
 }
 
-static uint8_t
+static uint16_t
 ioRead2Loop(Read2Fn_t readFn, uint16_t len)
 {
+    uint16_t count;
     uint8_t data[2];
 
     usbInitIo(len, ENDPOINT_DIR_IN);
-    while (len != 0) {
+    for (count = 0; count < len; count += 2) {
         readFn(data);
-        if (usbSendByte(data[0]) != 0 || usbSendByte(data[1]) != 0)
+        if (IoAborted() || usbSendByte(data[0]) != 0 ||
+            usbSendByte(data[1]) != 0)
             break;
-        len -= 2;
+        IoProgress();
     }
     usbIoDone();
-    return 0;
+    return count;
 }
 
-static uint8_t
+static uint16_t
 ioWrite2Loop(Write2Fn_t writeFn, uint16_t len)
 {
+    uint16_t count;
     uint8_t data[2];
 
     usbInitIo(len, ENDPOINT_DIR_OUT);
-    while (len != 0) {
+    for (count = 0; count < len; count += 2) {
         if (usbRecvByte(&data[0]) != 0 || usbRecvByte(&data[1]) != 0)
             break;
         writeFn(data);
-        len -= 2;
+        if (IoAborted())
+            break;
+        IoProgress();
     }
     usbIoDone();
-    return 0;
+    return count;
 }
 
 static uint8_t
@@ -627,7 +654,7 @@ usbHandleControl(uint8_t cmd, uint8_t *replyBuf)
         if (cmdSeqInProgress) {
             replyBuf[2] |= XUM1541_DOING_RESET;
             cmdSeqInProgress = XUM1541_DOING_RESET;
-            cmds->cbm_reset(false);
+            pendingReset = true;
             SetAbortState();
         }
         cmdSeqInProgress |= XUM1541_CMD_IN_PROGRESS;
@@ -640,7 +667,15 @@ usbHandleControl(uint8_t cmd, uint8_t *replyBuf)
     case XUM1541_RESET:
         // Only do reset if we didn't just reset in INIT (above).
         if ((cmdSeqInProgress & XUM1541_DOING_RESET) == 0)
-            cmds->cbm_reset(false);
+            pendingReset = true;
+        return 0;
+    case XUM1541_ABORT:
+        if (USB_ControlRequest.wValue != 0)
+            SetAbortState();
+        replyBuf[0] = doDeviceReset ? 1 : 0;
+        return 1;
+    case XUM1541_SET_TIMEOUT:
+        IoSetTimeout(USB_ControlRequest.wValue);
         return 0;
 #ifdef TAPE_SUPPORT
     case XUM1541_TAP_BREAK:
@@ -665,16 +700,29 @@ usbHandleControl(uint8_t cmd, uint8_t *replyBuf)
 // Store the 16-bit response to a bulk command in a status buffer.
 #define XUM_SET_STATUS_VAL(buf, v)  *(uint16_t *)((buf) + 1) = (v)
 
+// Status for S1/S2/X transfers, only sent if the host requested it.
+static int8_t
+rwStatus(uint8_t flags, uint8_t *status, uint16_t count, bool ok)
+{
+    if ((flags & XUM_RW_STATUS) == 0)
+        return 0;
+    XUM_SET_STATUS_VAL(status, count);
+    return ok ? XUM1541_IO_READY : XUM1541_IO_ERROR;
+}
+
 int8_t
 usbHandleBulk(uint8_t *request, uint8_t *status)
 {
     uint8_t cmd, proto;
     int8_t ret;
-    uint16_t len;
-    bool nibEarlyExit;
+    uint16_t len, count;
+    bool nibEarlyExit, ok;
 
     // Clear off "just did reset" flag each time a different cmd is run.
     cmdSeqInProgress &= ~XUM1541_DOING_RESET;
+
+    // Bound all waits of this command, except for tape mode.
+    IoArm((currState & XUM1541_TAPE_PRESENT) == 0);
 
     // Default is to return no data
     ret = XUM1541_IO_READY;
@@ -696,12 +744,16 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
             ret = 0;
             break;
         case XUM1541_S1:
-            ioReadLoop(s1_read_byte, len);
-            ret = 0;
+            count = ioReadLoop(s1_read_byte, len);
+            ret = rwStatus(request[1], status, count, count == len);
             break;
         case XUM1541_S2:
-            ioReadLoop(s2_read_byte, len);
-            ret = 0;
+            count = ioReadLoop(s2_read_byte, len);
+            ret = rwStatus(request[1], status, count, count == len);
+            break;
+        case XUM1541_X:
+            count = x_read_loop(len, XUM_RW_FLAGS(request[1]), &ok);
+            ret = rwStatus(XUM_RW_STATUS, status, count, ok);
             break;
         case XUM1541_PP:
             ioRead2Loop(pp_read_2_bytes, len);
@@ -758,12 +810,16 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
             XUM_SET_STATUS_VAL(status, len);
             break;
         case XUM1541_S1:
-            ioWriteLoop(s1_write_byte, len);
-            ret = 0;
+            count = ioWriteLoop(s1_write_byte, len);
+            ret = rwStatus(request[1], status, count, count == len);
             break;
         case XUM1541_S2:
-            ioWriteLoop(s2_write_byte, len);
-            ret = 0;
+            count = ioWriteLoop(s2_write_byte, len);
+            ret = rwStatus(request[1], status, count, count == len);
+            break;
+        case XUM1541_X:
+            count = x_write_loop(len, XUM_RW_FLAGS(request[1]), &ok);
+            ret = rwStatus(XUM_RW_STATUS, status, count, ok);
             break;
         case XUM1541_PP:
             ioWrite2Loop(pp_write_2_bytes, len);
@@ -814,7 +870,7 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
         break;
     case XUM1541_IEC_WAIT:
         if (!cmds->cbm_wait(/*line*/request[1], /*state*/request[2])) {
-            ret = 0;
+            ret = XUM1541_IO_ERROR;
             break;
         }
         /* FALLTHROUGH */
@@ -907,6 +963,11 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
         DEBUGF(DBG_ERROR, "ERR: bulk cmd %d not impl.\n", cmd);
         ret = -1;
     }
+
+    // Release the bus if the drive stopped responding.
+    if (ioTimedOut)
+        iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+    IoArm(false);
 
     return ret;
 }

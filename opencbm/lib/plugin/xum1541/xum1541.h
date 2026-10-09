@@ -53,6 +53,12 @@ extern unsigned int xum1541_usb_quirks_mode;
 // libusb value for "wait forever" (signed int)
 #define LIBUSB_NO_TIMEOUT   0x7fffffff
 
+// Default firmware I/O idle timeout, overridden by env XUM1541_IO_TIMEOUT_MS
+#define XUM1541_IO_TIMEOUT_MS   30000
+
+// Host allowance on top of the firmware timeout for a deferred bus reset
+#define XUM1541_RESET_MS        3000
+
 // the maximum value for all allowed xum1541 serial numbers
 #define MAX_ALLOWED_XUM1541_SERIALNUM 255
 
@@ -80,5 +86,10 @@ int xum1541_read_ext(struct opencbm_usb_handle *HandleXum1541, unsigned char mod
     unsigned char *data, size_t size, int *Status, int *BytesRead);
 
 int xum1541_tap_break(struct opencbm_usb_handle *HandleXum1541);
+int xum1541_set_timeout(struct opencbm_usb_handle *HandleXum1541, unsigned int ms);
+int xum1541_resync(struct opencbm_usb_handle *HandleXum1541);
+
+// Firmware version reported by XUM1541_INIT
+extern unsigned char DeviceFirmwareVersion;
 
 #endif // XUM1541_H

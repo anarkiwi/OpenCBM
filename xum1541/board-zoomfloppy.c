@@ -76,7 +76,7 @@ iec_poll_pins(void)
            ((PIND & IO_CLK_IN)  >> 1) |
            ((PIND & IO_DATA_IN) << 1) |
            ((PINC & IO_ATN_IN)  << 1) |
-           ((PINC & IO_RESET_IN) >> 1);
+           ((PIND & IO_RESET_IN) >> 1);
 }
 
 /*

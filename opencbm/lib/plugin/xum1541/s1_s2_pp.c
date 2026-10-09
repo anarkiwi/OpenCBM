@@ -48,6 +48,36 @@
 #include "xum1541.h"
 
 
+/*
+ * Read with a trailing status block (firmware version 9 and later).
+ * Returns the count only if all bytes were transferred, else -1.
+ */
+static int
+xum1541_read_status(CBM_FILE HandleDevice, unsigned char mode, unsigned char *data, unsigned int size)
+{
+    int status, count;
+
+    if (xum1541_read_ext((struct opencbm_usb_handle *)HandleDevice, mode,
+        data, size, &status, &count) < 0 || count != (int)size || status != count)
+        return -1;
+    return count;
+}
+
+/*
+ * Write with a trailing status block (firmware version 9 and later).
+ * Returns the count only if all bytes were transferred, else -1.
+ */
+static int
+xum1541_write_status(CBM_FILE HandleDevice, unsigned char mode, const unsigned char *data, unsigned int size)
+{
+    int status, count;
+
+    if (xum1541_write_ext((struct opencbm_usb_handle *)HandleDevice, mode,
+        data, size, &status, &count) < 0 || count != (int)size || status != count)
+        return -1;
+    return count;
+}
+
 /*-------------------------------------------------------------------*/
 /*--------- OPENCBM ARCH FUNCTIONS ----------------------------------*/
 
@@ -69,6 +99,8 @@
 int CBMAPIDECL
 opencbm_plugin_s1_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned int size)
 {
+    if (DeviceFirmwareVersion >= 9)
+        return xum1541_read_status(HandleDevice, XUM1541_S1 | XUM_RW_STATUS, data, size);
     return xum1541_read((struct opencbm_usb_handle *)HandleDevice, XUM1541_S1, data, size);
 }
 
@@ -90,6 +122,8 @@ opencbm_plugin_s1_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned in
 int CBMAPIDECL
 opencbm_plugin_s1_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
 {
+    if (DeviceFirmwareVersion >= 9)
+        return xum1541_write_status(HandleDevice, XUM1541_S1 | XUM_RW_STATUS, data, size);
     return xum1541_write((struct opencbm_usb_handle *)HandleDevice, XUM1541_S1, data, size);
 }
 
@@ -111,6 +145,8 @@ opencbm_plugin_s1_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsi
 int CBMAPIDECL
 opencbm_plugin_s2_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned int size)
 {
+    if (DeviceFirmwareVersion >= 9)
+        return xum1541_read_status(HandleDevice, XUM1541_S2 | XUM_RW_STATUS, data, size);
     return xum1541_read((struct opencbm_usb_handle *)HandleDevice, XUM1541_S2, data, size);
 }
 
@@ -132,6 +168,8 @@ opencbm_plugin_s2_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned in
 int CBMAPIDECL
 opencbm_plugin_s2_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
 {
+    if (DeviceFirmwareVersion >= 9)
+        return xum1541_write_status(HandleDevice, XUM1541_S2 | XUM_RW_STATUS, data, size);
     return xum1541_write((struct opencbm_usb_handle *)HandleDevice, XUM1541_S2, data, size);
 }
 
@@ -259,4 +297,113 @@ int CBMAPIDECL
 opencbm_plugin_nib_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
 {
     return xum1541_write((struct opencbm_usb_handle *)HandleDevice, XUM1541_NIB, data, size);
+}
+
+/*! \brief Read data with X protocol
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer which will hold the read bytes.
+
+  \param size
+    The size of the data buffer the read bytes will be written to.
+
+  \return
+    The number of bytes read, or -1 if not all of them could be read or
+    the firmware does not support the protocol.
+*/
+int CBMAPIDECL
+opencbm_plugin_x_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned int size)
+{
+    if (DeviceFirmwareVersion < 9)
+        return -1;
+    return xum1541_read_status(HandleDevice, XUM1541_X, data, size);
+}
+
+/*! \brief Write data with X protocol
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer to be written
+
+  \param size
+    The size of the data buffer to be written
+
+  \return
+    The number of bytes written, or -1 if not all of them could be written
+    or the firmware does not support the protocol.
+*/
+int CBMAPIDECL
+opencbm_plugin_x_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
+{
+    if (DeviceFirmwareVersion < 9)
+        return -1;
+    return xum1541_write_status(HandleDevice, XUM1541_X, data, size);
+}
+
+/*! \brief Read data with X protocol at 2 MHz drive speed
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer which will hold the read bytes.
+
+  \param size
+    The size of the data buffer the read bytes will be written to.
+
+  \return
+    The number of bytes read, or -1 if not all of them could be read or
+    the firmware does not support the protocol.
+*/
+int CBMAPIDECL
+opencbm_plugin_x2_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned int size)
+{
+    if (DeviceFirmwareVersion < 9)
+        return -1;
+    return xum1541_read_status(HandleDevice, XUM1541_X | XUM_X_2MHZ, data, size);
+}
+
+/*! \brief Write data with X protocol at 2 MHz drive speed
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer to be written
+
+  \param size
+    The size of the data buffer to be written
+
+  \return
+    The number of bytes written, or -1 if not all of them could be written
+    or the firmware does not support the protocol.
+*/
+int CBMAPIDECL
+opencbm_plugin_x2_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
+{
+    if (DeviceFirmwareVersion < 9)
+        return -1;
+    return xum1541_write_status(HandleDevice, XUM1541_X | XUM_X_2MHZ, data, size);
+}
+
+/*! \brief Set the xum1541 firmware I/O idle timeout
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param ms
+    Timeout in milliseconds, rounded up to 100 ms units. 0 disables it.
+
+  \return
+    0 on success, -1 on error.
+*/
+int CBMAPIDECL
+opencbm_plugin_xum1541_set_timeout(CBM_FILE HandleDevice, unsigned int ms)
+{
+    return xum1541_set_timeout((struct opencbm_usb_handle *)HandleDevice, ms);
 }

@@ -11,11 +11,21 @@
 #include <avr/power.h>
 #include <avr/wdt.h>
 #include <string.h>
+#include <util/atomic.h>
 
 #include "xum1541.h"
 
 // Flag indicating we should abort any in-progress data transfers
 volatile bool doDeviceReset;
+
+// Flag indicating the main loop should reset the drive bus
+volatile bool pendingReset;
+
+// I/O deadline in 100 ms timer ticks (0 disables it) and its state
+static volatile uint16_t ioTimeout = 300;
+static uint16_t ioTicks;
+static bool ioArmed;
+volatile bool ioTimedOut;
 
 // Flag for whether we are in EOI state
 volatile uint8_t eoi;
@@ -65,8 +75,17 @@ main(void)
         * Do periodic tasks each command. If we found the device was in
         * a stalled state, reset it before the next command.
         */
-        if (!TimerWorker())
+        TimerWorker();
+        if (doDeviceReset) {
+            usbIoReset();
+            ioTimedOut = false;
             doDeviceReset = false;
+        }
+        if (pendingReset) {
+            pendingReset = false;
+            if (cmds != NULL)
+                cmds->cbm_reset(false);
+        }
 
         if (USB_DeviceState >= DEVICE_STATE_Configured) {
             /*
@@ -256,16 +275,52 @@ SetAbortState()
 bool
 TimerWorker()
 {
+    uint16_t limit;
+
     wdt_reset();
 
-    // Inform the caller to quit the current transfer if we're resetting.
-    if (doDeviceReset)
-        return false;
-
-    // If the timer has fired, update the board display
-    if (board_timer_fired())
+    // If the timer has fired, update the board display and I/O deadline
+    if (board_timer_fired()) {
         board_update_display(statusValue);
-    return true;
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+            limit = ioTimeout;
+        }
+        if (ioArmed && limit != 0 && ++ioTicks >= limit)
+            ioTimedOut = true;
+    }
+
+    // Inform the caller to quit the current transfer if we're resetting.
+    return !IoAborted();
+}
+
+// Arm or disarm the I/O deadline, restarting it either way.
+void
+IoArm(bool on)
+{
+    ioArmed = on;
+    ioTicks = 0;
+    ioTimedOut = false;
+}
+
+// Restart the I/O deadline after the transfer made progress.
+void
+IoProgress(void)
+{
+    ioTicks = 0;
+}
+
+// Set the I/O deadline in 100 ms units, 0 to disable it.
+void
+IoSetTimeout(uint16_t ticks)
+{
+    ioTimeout = ticks;
+}
+
+// Check if the current transfer should be abandoned.
+bool
+IoAborted(void)
+{
+    return doDeviceReset || ioTimedOut || pendingReset;
 }
 
 /*

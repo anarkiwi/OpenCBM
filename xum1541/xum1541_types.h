@@ -15,7 +15,7 @@
 #define XUM1541_PID                 0x0504
 
 // XUM1541_INIT reports this versions
-#define XUM1541_VERSION             8
+#define XUM1541_VERSION             9
 #define XUM1541_MINIMUM_COMPATIBLE_VERSION 7
 
 // USB parameters for descriptor configuration
@@ -33,6 +33,8 @@
 #define XUM1541_GITREV              (XUM1541_ECHO + 6)
 #define XUM1541_GCCVER              (XUM1541_ECHO + 7)
 #define XUM1541_LIBCVER             (XUM1541_ECHO + 8)
+#define XUM1541_ABORT               (XUM1541_ECHO + 9)
+#define XUM1541_SET_TIMEOUT         (XUM1541_ECHO + 10)
 
 // Adapter capabilities, but device may not support them
 #define XUM1541_CAP_CBM             0x01 // supports CBM commands
@@ -48,10 +50,17 @@
 #else
 #define XUM1541_CAP_TAP             0
 #endif
+#define XUM1541_CAP_X               0x20 // X protocol
+#ifdef X_SUPPORT
+#define XUM1541_CAP_X_FW            XUM1541_CAP_X
+#else
+#define XUM1541_CAP_X_FW            0
+#endif
 
 #define XUM1541_CAPABILITIES        (XUM1541_CAP_CBM |      \
                                      XUM1541_CAP_NIB |      \
                                      XUM1541_CAP_TAP |      \
+                                     XUM1541_CAP_X_FW |     \
                                      XUM1541_CAP_IEEE488)
 
 // Actual auto-detected status
@@ -150,6 +159,13 @@
 #define XUM1541_NIB_SRQ_COMMAND     (9 << 4) // Serial commands
 #define XUM1541_TAP                (10 << 4) // tape read/write
 #define XUM1541_TAP_CONFIG         (11 << 4) // tape send/receive configuration
+#define XUM1541_X                  (12 << 4) // X protocol
+
+// Flag for S1/S2: send status (count of bytes transferred) after data
+#define XUM_RW_STATUS               (1 << 3)
+
+// Flags for use with XUM1541_X protocol
+#define XUM_X_2MHZ                  (1 << 0)
 
 // Flags for use with write and XUM1541_CBM protocol
 #define XUM_WRITE_TALK              (1 << 0)

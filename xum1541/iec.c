@@ -407,6 +407,7 @@ iec_raw_write(uint16_t len, uint8_t flags)
         }
         if (send_byte(data)) {
             len--;
+            IoProgress();
             DELAY_US(IEC_T_BB);
         } else {
             DEBUGF(DBG_ERROR, "write: io err\n");
@@ -536,6 +537,7 @@ iec_raw_read(uint16_t len)
             if (usbSendByte(b))
                 break;
             count++;
+            IoProgress();
             DELAY_US(50);
         }
 

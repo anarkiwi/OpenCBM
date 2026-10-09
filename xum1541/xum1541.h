@@ -166,6 +166,8 @@ enum {
 
 extern volatile uint8_t eoi;
 extern volatile bool doDeviceReset;
+extern volatile bool pendingReset;
+extern volatile bool ioTimedOut;
 
 // Board status handling
 uint8_t get_status(void);
@@ -175,6 +177,10 @@ void set_status(uint8_t status);
 int8_t usbHandleControl(uint8_t cmd, uint8_t *replyBuf);
 int8_t usbHandleBulk(uint8_t *request, uint8_t *status);
 bool TimerWorker(void);
+void IoArm(bool on);
+void IoProgress(void);
+void IoSetTimeout(uint16_t ticks);
+bool IoAborted(void);
 void SetAbortState(void);
 void USB_ResetConfig(void);
 bool USB_ReadBlock(uint8_t *buf, uint8_t len);
@@ -182,6 +188,7 @@ bool USB_WriteBlock(uint8_t *buf, uint8_t len);
 uint8_t AbortOnReset(void);
 void usbInitIo(uint16_t len, uint8_t dir);
 void usbIoDone(void);
+void usbIoReset(void);
 int8_t usbSendByte(uint8_t data);
 int8_t usbRecvByte(uint8_t *data);
 void Set_usbDataLen(uint16_t Len);
@@ -236,6 +243,8 @@ uint8_t nib_srqburst_read(void);
 void nib_srqburst_write(uint8_t data);
 uint8_t nib_srq_write_handshaked(uint8_t data, uint8_t toggle);
 #endif // SRQ_NIB_SUPPORT
+uint16_t x_read_loop(uint16_t len, uint8_t flags, bool *ok);
+uint16_t x_write_loop(uint16_t len, uint8_t flags, bool *ok);
 #ifdef TAPE_SUPPORT
 uint16_t Tape_GetTapeFirmwareVersion(void); // Return tape firmware version for compatibility check.
 uint16_t Tape_UploadConfig(void);           // Upload tape read/write configuration.

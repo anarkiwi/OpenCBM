@@ -1,1 +1,7 @@
 LIBRARY opencbm-xum1541
+EXPORTS
+    opencbm_plugin_x_read_n
+    opencbm_plugin_x_write_n
+    opencbm_plugin_x2_read_n
+    opencbm_plugin_x2_write_n
+    opencbm_plugin_xum1541_set_timeout

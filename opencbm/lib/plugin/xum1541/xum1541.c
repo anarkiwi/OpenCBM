@@ -39,6 +39,9 @@
 static int debug_level = -1; /*!< \internal \brief the debugging level for debugging output */
 
 unsigned char DeviceDriveMode; // Temporary disk/tape mode hack until usb device handle context is there.
+unsigned char DeviceFirmwareVersion; // Firmware version reported by XUM1541_INIT.
+
+static unsigned int fw_timeout_ms = XUM1541_IO_TIMEOUT_MS; // Firmware I/O idle timeout, 0 if disabled.
 
 /*! \internal \brief Output debugging information for the xum1541
 
@@ -491,6 +494,102 @@ xum1541_clear_halt(struct opencbm_usb_handle *Xum1541Handle)
     return 0;
 }
 
+// Send a class control request with a value, optionally reading a reply.
+static int
+xum1541_control(struct opencbm_usb_handle *HandleXum1541, int in,
+    unsigned int cmd, unsigned int value, unsigned char *buf, int len)
+{
+#if HAVE_LIBUSB0
+    return usb.control_msg(HandleXum1541->devh,
+        USB_TYPE_CLASS | (in ? USB_ENDPOINT_IN : USB_ENDPOINT_OUT),
+        cmd, value, 0, (char *)buf, len, USB_TIMEOUT);
+#elif HAVE_LIBUSB1
+    return usb.control_transfer(HandleXum1541->devh,
+        LIBUSB_REQUEST_TYPE_CLASS | (in ? LIBUSB_ENDPOINT_IN : LIBUSB_ENDPOINT_OUT),
+        (uint8_t)cmd, (uint16_t)value, 0, buf, (uint16_t)len, USB_TIMEOUT);
+#endif
+}
+
+/*
+ * Bulk transfer timeout: the firmware idle timeout plus time for a deferred
+ * reset and the data itself. Tape transfers wait on the user, so never expire.
+ */
+static unsigned int
+xum1541_timeout(BOOL isTapeCmd, size_t bytes)
+{
+    if (isTapeCmd || fw_timeout_ms == 0)
+        return LIBUSB_NO_TIMEOUT;
+    return fw_timeout_ms + XUM1541_RESET_MS + 4 * (unsigned int)bytes;
+}
+
+/*! \brief Set the firmware I/O idle timeout
+
+ \param HandleXum1541
+   A XUM1541_HANDLE which contains the file handle of the USB device.
+
+ \param ms
+   Timeout in milliseconds, rounded up to 100 ms units. 0 disables it.
+
+ \return
+   0 on success, -1 on error.
+*/
+int
+xum1541_set_timeout(struct opencbm_usb_handle *HandleXum1541, unsigned int ms)
+{
+    unsigned int ticks = ms / 100 + (ms % 100 != 0);
+
+    if (ticks > 0xffff)
+        ticks = 0xffff;
+    fw_timeout_ms = ticks * 100;
+    if (DeviceFirmwareVersion < 9)
+        return 0;
+    if (xum1541_control(HandleXum1541, 0, XUM1541_SET_TIMEOUT, ticks, NULL, 0) < 0) {
+        fprintf(stderr, "USB error setting xum1541 timeout\n");
+        return -1;
+    }
+    return 0;
+}
+
+// Optionally abort the current command, wait for the firmware to unwind and clear the stalls.
+static int
+xum1541_unwind(struct opencbm_usb_handle *HandleXum1541, int abort)
+{
+    unsigned char busy = 1;
+    unsigned int waited;
+
+    if (DeviceFirmwareVersion >= 9) {
+        for (waited = 0; busy && waited <= fw_timeout_ms + XUM1541_RESET_MS; waited += 10) {
+            if (waited != 0)
+                arch_usleep(10000);
+            if (xum1541_control(HandleXum1541, 1, XUM1541_ABORT, abort && waited == 0,
+                &busy, sizeof(busy)) != sizeof(busy)) {
+                fprintf(stderr, "USB error in xum1541_unwind\n");
+                return -1;
+            }
+        }
+        if (busy) {
+            fprintf(stderr, "xum1541 did not abort current command\n");
+            return -1;
+        }
+    }
+    return xum1541_clear_halt(HandleXum1541);
+}
+
+/*! \brief Bring host and firmware back in sync after a failed transfer
+
+ \param HandleXum1541
+   A XUM1541_HANDLE which contains the file handle of the USB device.
+
+ \return
+   0 on success, -1 on error.
+*/
+int
+xum1541_resync(struct opencbm_usb_handle *HandleXum1541)
+{
+    xum1541_dbg(0, "resyncing with device");
+    return xum1541_unwind(HandleXum1541, 1);
+}
+
 /*! \brief Initialize the xum1541 device
   This function tries to find and identify the xum1541 device.
 
@@ -518,6 +617,7 @@ xum1541_init(struct opencbm_usb_handle **HandleXum1541_p, int PortNumber)
     uint8_t cmd;
     int len, ret;
     int success = 0;
+    const char *timeoutEnv;
 
     if (HandleXum1541_p == NULL) {
         perror("xum1541_init: HandleXum1541_p is NULL");
@@ -526,6 +626,7 @@ xum1541_init(struct opencbm_usb_handle **HandleXum1541_p, int PortNumber)
 
     // Place after "opencbm_usb_handle" allocation:
     /*uh->*/DeviceDriveMode = DeviceDriveMode_Uninit;
+    DeviceFirmwareVersion = 0;
 
     *HandleXum1541_p = HandleXum1541 = malloc(sizeof(struct opencbm_usb_handle));
     if (HandleXum1541 == NULL) {
@@ -622,6 +723,7 @@ xum1541_init(struct opencbm_usb_handle **HandleXum1541_p, int PortNumber)
         if (xum1541_check_version(devInfo[0]) != 0) {
             break;
         }
+        DeviceFirmwareVersion = devInfo[0];
         if (len >= 4) {
             xum1541_dbg(0, "device capabilities %02x status %02x",
                 devInfo[1], devInfo[2]);
@@ -631,10 +733,16 @@ xum1541_init(struct opencbm_usb_handle **HandleXum1541_p, int PortNumber)
         devStatus = devInfo[2];
         if ((devStatus & XUM1541_DOING_RESET) != 0) {
             fprintf(stderr, "previous command was interrupted, resetting\n");
-            // Clear the stalls on both endpoints
-            if (xum1541_clear_halt(HandleXum1541) < 0) {
+            // Wait for the abort to finish and clear the stalls on both endpoints
+            if (xum1541_unwind(HandleXum1541, 0) < 0) {
                 break;
             }
+        }
+
+        timeoutEnv = getenv("XUM1541_IO_TIMEOUT_MS");
+        if (xum1541_set_timeout(HandleXum1541, timeoutEnv != NULL ?
+            (unsigned int)strtoul(timeoutEnv, NULL, 0) : XUM1541_IO_TIMEOUT_MS) < 0) {
+            break;
         }
 
         //  Enable disk or tape mode.
@@ -777,24 +885,18 @@ xum1541_control_msg(struct opencbm_usb_handle *HandleXum1541, unsigned int cmd)
 
     xum1541_dbg(1, "control msg %d", cmd);
 
-#if HAVE_LIBUSB0
-    nBytes = usb.control_msg(HandleXum1541->devh, USB_TYPE_CLASS | USB_ENDPOINT_OUT,
-        cmd, 0, 0, NULL, 0, USB_TIMEOUT);
-#elif HAVE_LIBUSB1
-    nBytes = usb.control_transfer(HandleXum1541->devh, LIBUSB_REQUEST_TYPE_CLASS | LIBUSB_ENDPOINT_OUT,
-        (uint8_t) cmd, 0, 0, NULL, 0, USB_TIMEOUT);
-#endif
+    nBytes = xum1541_control(HandleXum1541, 0, cmd, 0, NULL, 0);
     if (nBytes < 0) {
         fprintf(stderr, "USB error in xum1541_control_msg: %s\n",
             usb.error_name(nBytes));
-        exit(-1); /** \todo WHY? */
+        return -1;
     }
 
     return nBytes;
 }
 
 static int
-xum1541_wait_status(struct opencbm_usb_handle *HandleXum1541)
+xum1541_wait_status(struct opencbm_usb_handle *HandleXum1541, unsigned int timeout)
 {
     int nBytes, deviceBusy, ret=0;
     unsigned char statusBuf[XUM_STATUSBUF_SIZE];
@@ -805,12 +907,12 @@ xum1541_wait_status(struct opencbm_usb_handle *HandleXum1541)
 #if HAVE_LIBUSB0
         nBytes = usb.bulk_read(HandleXum1541->devh,
             XUM_BULK_IN_ENDPOINT | USB_ENDPOINT_IN,
-            (char*)statusBuf, XUM_STATUSBUF_SIZE, LIBUSB_NO_TIMEOUT);
+            (char*)statusBuf, XUM_STATUSBUF_SIZE, timeout);
 #elif HAVE_LIBUSB1
         nBytes = 0;
         ret = usb.bulk_transfer(HandleXum1541->devh,
             XUM_BULK_IN_ENDPOINT | LIBUSB_ENDPOINT_IN,
-            statusBuf, XUM_STATUSBUF_SIZE, &nBytes, LIBUSB_NO_TIMEOUT);
+            statusBuf, XUM_STATUSBUF_SIZE, &nBytes, timeout);
 #endif
         if (nBytes == XUM_STATUSBUF_SIZE) {
             switch (XUM_GET_STATUS(statusBuf)) {
@@ -826,12 +928,14 @@ xum1541_wait_status(struct opencbm_usb_handle *HandleXum1541)
             default:
                 fprintf(stderr, "unknown status value: %d\n",
                     XUM_GET_STATUS(statusBuf));
-                exit(-1);
+                xum1541_resync(HandleXum1541);
+                return -1;
             }
         } else {
             fprintf(stderr, "USB error in xum1541_wait_status: %s\n",
                 usb.error_name(ret));
-            exit(-1); /** \todo WHY? */
+            xum1541_resync(HandleXum1541);
+            return -1;
         }
     }
 
@@ -919,11 +1023,11 @@ xum1541_ioctl(struct opencbm_usb_handle *HandleXum1541, unsigned int cmd, unsign
 #if HAVE_LIBUSB0
     nBytes = usb.bulk_write(HandleXum1541->devh,
         XUM_BULK_OUT_ENDPOINT | USB_ENDPOINT_OUT,
-        (char *)cmdBuf, sizeof(cmdBuf), LIBUSB_NO_TIMEOUT);
+        (char *)cmdBuf, sizeof(cmdBuf), xum1541_timeout(isTapeCmd, 0));
 #elif HAVE_LIBUSB1
     ret = usb.bulk_transfer(HandleXum1541->devh,
         XUM_BULK_OUT_ENDPOINT | LIBUSB_ENDPOINT_OUT,
-        cmdBuf, sizeof(cmdBuf), &nBytes, LIBUSB_NO_TIMEOUT);
+        cmdBuf, sizeof(cmdBuf), &nBytes, xum1541_timeout(isTapeCmd, 0));
 #endif
 
 #if HAVE_LIBUSB0
@@ -933,11 +1037,12 @@ xum1541_ioctl(struct opencbm_usb_handle *HandleXum1541, unsigned int cmd, unsign
 #endif
         fprintf(stderr, "USB error in xum1541_ioctl cmd: %s\n",
             usb.error_name(ret));
-        exit(-1);
+        xum1541_resync(HandleXum1541);
+        return -1;
     }
 
     // If we have a valid response, return extended status
-    ret = xum1541_wait_status(HandleXum1541);
+    ret = xum1541_wait_status(HandleXum1541, xum1541_timeout(isTapeCmd, 0));
     xum1541_dbg(2, "return val = %x", ret);
     return ret;
 }
@@ -1002,11 +1107,11 @@ xum1541_write(struct opencbm_usb_handle *HandleXum1541, unsigned char modeFlags,
 #if HAVE_LIBUSB0
     wr = usb.bulk_write(HandleXum1541->devh,
         XUM_BULK_OUT_ENDPOINT | USB_ENDPOINT_OUT,
-        (char *)cmdBuf, sizeof(cmdBuf), LIBUSB_NO_TIMEOUT);
+        (char *)cmdBuf, sizeof(cmdBuf), xum1541_timeout(isTapeCmd, 0));
 #elif HAVE_LIBUSB1
     ret = usb.bulk_transfer(HandleXum1541->devh,
         XUM_BULK_OUT_ENDPOINT | LIBUSB_ENDPOINT_OUT,
-        cmdBuf, sizeof(cmdBuf), &wr, LIBUSB_NO_TIMEOUT);
+        cmdBuf, sizeof(cmdBuf), &wr, xum1541_timeout(isTapeCmd, 0));
 #endif
 
 #if HAVE_LIBUSB0
@@ -1016,6 +1121,7 @@ xum1541_write(struct opencbm_usb_handle *HandleXum1541, unsigned char modeFlags,
 #endif
         fprintf(stderr, "USB error in write cmd: %s\n",
             usb.error_name(ret));
+        xum1541_resync(HandleXum1541);
         return -1;
     }
 
@@ -1027,12 +1133,12 @@ xum1541_write(struct opencbm_usb_handle *HandleXum1541, unsigned char modeFlags,
 #if HAVE_LIBUSB0
         wr = usb.bulk_write(HandleXum1541->devh,
             XUM_BULK_OUT_ENDPOINT | USB_ENDPOINT_OUT,
-            (char *)data, bytes2write, LIBUSB_NO_TIMEOUT);
+            (char *)data, bytes2write, xum1541_timeout(isTapeCmd, bytes2write));
 #elif HAVE_LIBUSB1
         wr = 0;
         ret = usb.bulk_transfer(HandleXum1541->devh,
             XUM_BULK_OUT_ENDPOINT | LIBUSB_ENDPOINT_OUT,
-            (unsigned char *)data, bytes2write, &wr, LIBUSB_NO_TIMEOUT);
+            (unsigned char *)data, bytes2write, &wr, xum1541_timeout(isTapeCmd, bytes2write));
 #endif
 
 #if HAVE_LIBUSB0
@@ -1063,6 +1169,7 @@ xum1541_write(struct opencbm_usb_handle *HandleXum1541, unsigned char modeFlags,
             }
             fprintf(stderr, "USB error in write data: %s\n",
                 usb.error_name(ret));
+            xum1541_resync(HandleXum1541);
             return -1;
         }
 
@@ -1081,7 +1188,7 @@ xum1541_write(struct opencbm_usb_handle *HandleXum1541, unsigned char modeFlags,
 
     // If this is the CBM protocol, wait for the status message.
     if (mode == XUM1541_CBM) {
-        ret = xum1541_wait_status(HandleXum1541);
+        ret = xum1541_wait_status(HandleXum1541, xum1541_timeout(isTapeCmd, 0));
         if (ret >= 0)
             xum1541_dbg(2, "wait done, extended status %d", ret);
         else
@@ -1114,7 +1221,8 @@ xum1541_write_ext(struct opencbm_usb_handle *HandleXum1541, unsigned char modeFl
     if (*BytesWritten < 0)
         return *BytesWritten;
     xum1541_dbg(2, "[xum1541_write_ext] BytesWritten = %d", *BytesWritten);
-    *Status = xum1541_wait_status(HandleXum1541);
+    *Status = xum1541_wait_status(HandleXum1541,
+        xum1541_timeout(modeFlags == XUM1541_TAP || modeFlags == XUM1541_TAP_CONFIG, 0));
     xum1541_dbg(2, "[xum1541_write_ext] Status = %d", *Status);
     return 1;
 }
@@ -1140,7 +1248,8 @@ xum1541_read_ext(struct opencbm_usb_handle *HandleXum1541, unsigned char mode, u
     if (*BytesRead < 0)
         return *BytesRead;
     xum1541_dbg(2, "[xum1541_read_ext] BytesRead = %d", *BytesRead);
-    *Status = xum1541_wait_status(HandleXum1541);
+    *Status = xum1541_wait_status(HandleXum1541,
+        xum1541_timeout(mode == XUM1541_TAP || mode == XUM1541_TAP_CONFIG, 0));
     xum1541_dbg(2, "[xum1541_read_ext] Status = %d", *Status);
     return 1;
 }
@@ -1186,11 +1295,11 @@ xum1541_read(struct opencbm_usb_handle *HandleXum1541, unsigned char mode, unsig
     ret = 0;
     rd = usb.bulk_write(HandleXum1541->devh,
         XUM_BULK_OUT_ENDPOINT | USB_ENDPOINT_OUT,
-        (char *)cmdBuf, sizeof(cmdBuf), LIBUSB_NO_TIMEOUT);
+        (char *)cmdBuf, sizeof(cmdBuf), xum1541_timeout(isTapeCmd, 0));
 #elif HAVE_LIBUSB1
     ret = usb.bulk_transfer(HandleXum1541->devh,
         XUM_BULK_OUT_ENDPOINT | LIBUSB_ENDPOINT_OUT,
-        cmdBuf, sizeof(cmdBuf), &rd, LIBUSB_NO_TIMEOUT);
+        cmdBuf, sizeof(cmdBuf), &rd, xum1541_timeout(isTapeCmd, 0));
 #endif
 #if HAVE_LIBUSB0
     if (rd < 0) {
@@ -1199,6 +1308,7 @@ xum1541_read(struct opencbm_usb_handle *HandleXum1541, unsigned char mode, unsig
 #endif
         fprintf(stderr, "USB error in read cmd: %s\n",
             usb.error_name(ret));
+        xum1541_resync(HandleXum1541);
         return -1;
     }
 
@@ -1211,11 +1321,11 @@ xum1541_read(struct opencbm_usb_handle *HandleXum1541, unsigned char mode, unsig
 #if HAVE_LIBUSB0
         rd = usb.bulk_read(HandleXum1541->devh,
             XUM_BULK_IN_ENDPOINT | USB_ENDPOINT_IN,
-            (char *)data, bytes2read, LIBUSB_NO_TIMEOUT);
+            (char *)data, bytes2read, xum1541_timeout(isTapeCmd, bytes2read));
 #elif HAVE_LIBUSB1
         ret = usb.bulk_transfer(HandleXum1541->devh,
             XUM_BULK_IN_ENDPOINT | LIBUSB_ENDPOINT_IN,
-            data, bytes2read, &rd, LIBUSB_NO_TIMEOUT);
+            data, bytes2read, &rd, xum1541_timeout(isTapeCmd, bytes2read));
 #endif
 #if HAVE_LIBUSB0
         if (rd < 0) {
@@ -1224,6 +1334,7 @@ xum1541_read(struct opencbm_usb_handle *HandleXum1541, unsigned char mode, unsig
 #endif
             fprintf(stderr, "USB error in read data(%p, %d): %s\n",
                data, (int)size, usb.error_name(ret));
+            xum1541_resync(HandleXum1541);
             return -1;
         }
 

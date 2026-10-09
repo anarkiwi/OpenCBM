@@ -46,6 +46,7 @@ void board_init_iec(void);
 #define IEEE_SUPPORT    1
 #define SRQ_NIB_SUPPORT 1
 #define TAPE_SUPPORT    1
+#define X_SUPPORT       1
 #endif
 
 #ifdef TAPE_SUPPORT

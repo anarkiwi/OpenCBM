@@ -1,0 +1,64 @@
+# syntax=docker/dockerfile:1
+
+# xum1541 (ZoomFloppy) firmware and OpenCBM with the xum1541 plugin, from this tree.
+#   docker build -f Dockerfile.nybulah --target firmware-hex -o out .   # just the .hex
+#   docker build -f Dockerfile.nybulah -t opencbm-nybulah .             # runtime image
+ARG UBUNTU_VERSION=24.04
+ARG FIRMWARE_MODEL=ZOOMFLOPPY
+
+FROM ubuntu:${UBUNTU_VERSION} AS firmware-deps
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        avr-libc \
+        binutils-avr \
+        gcc-avr \
+        make \
+        python3 \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM firmware-deps AS firmware
+ARG FIRMWARE_MODEL
+COPY xum1541/ /src/xum1541/
+WORKDIR /src/xum1541
+RUN rm -f xum1541-*.hex && make ${FIRMWARE_MODEL} \
+    && python3 misc/x_timing.py obj/${FIRMWARE_MODEL}/xum1541-${FIRMWARE_MODEL}-v*.bin x.c \
+    && mkdir -p /out \
+    && cp xum1541-${FIRMWARE_MODEL}-v*.hex /out/ \
+    && avr-size obj/${FIRMWARE_MODEL}/xum1541-${FIRMWARE_MODEL}-v*.bin > /out/size.txt
+
+FROM scratch AS firmware-hex
+COPY --from=firmware /out/ /
+
+FROM ubuntu:${UBUNTU_VERSION} AS builder-deps
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        build-essential \
+        cc65 \
+        libncurses-dev \
+        libusb-1.0-0-dev \
+        pkg-config \
+    && rm -rf /var/lib/apt/lists/*
+
+FROM builder-deps AS builder
+COPY . /src
+WORKDIR /src
+RUN make -f LINUX/Makefile opencbm plugin-xum1541 \
+    && make -f LINUX/Makefile DESTDIR=/out install install-plugin-xum1541
+
+FROM ubuntu:${UBUNTU_VERSION} AS runtime
+LABEL org.opencontainers.image.title="opencbm-nybulah" \
+      org.opencontainers.image.description="OpenCBM with the xum1541 plugin and firmware (X protocol, bounded waits)" \
+      org.opencontainers.image.licenses="GPL-2.0-only"
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        libusb-1.0-0 \
+    && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /out/usr/local/bin/ /usr/local/bin/
+COPY --from=builder /out/usr/local/lib/ /usr/local/lib/
+COPY --from=builder /out/usr/local/man/ /usr/local/share/man/
+COPY --from=builder /out/etc/opencbm.conf /etc/opencbm.conf
+COPY --from=builder /out/etc/opencbm.conf.d/ /etc/opencbm.conf.d/
+COPY --from=builder /out/etc/udev/rules.d/ /etc/udev/rules.d/
+COPY --from=firmware /out/ /usr/local/share/xum1541/
+RUN echo /usr/local/lib > /etc/ld.so.conf.d/opencbm.conf && ldconfig
+CMD ["cbmctrl", "--help"]
