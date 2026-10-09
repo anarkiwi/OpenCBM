@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Check the X protocol's compiled port timing against the schedule in x.c.
+"""Check the X protocol's compiled port timing against the schedules in x.c.
 
-Steps each x_rx/x_tx routine of the firmware ELF from every SYNC-detecting sbic
-and compares the clock of each in/out with the X_SAMPLE/X_CHANGE offsets.
+Steps each x_rx/x_tx and burst xb_rx/xb_tx routine from every SYNC-detecting sbic
+and compares each in/out clock with X_SAMPLE/X_CHANGE; bursts run BURST bytes and
+switch USB banks after BANK (a counter whose dec guards an lds).
 usage: x_timing.py ELF [x.c]
 """
 
@@ -10,7 +11,9 @@ import re
 import subprocess
 import sys
 
-CYCLES = {"cbi": 2, "rjmp": 2, "ldi": 1, "dec": 1, "nop": 1, "in": 1, "out": 1}
+BURST = 3
+BANK = 2
+CYCLES = {"cbi": 2, "sbi": 2, "rjmp": 2, "lds": 2, "sts": 2}
 LINE = re.compile(
     r"\s+([0-9a-f]+):\s+(?:[0-9a-f]{2} )+\s*(\w+)\s*([^;]*)(?:;\s*0x([0-9a-f]+))?"
 )
@@ -21,24 +24,51 @@ def defines(src):
     return {k: int(v) for k, v in re.findall(r"#define (X\w+) (\d+)\b", src)}
 
 
-def expected(d, f):
-    """Clocks of the four samples and of the five drive changes at f clocks/cycle."""
+def sample(d, a, b, f):
+    """X_SAMPLE: centre of drive window [a, b) in clocks."""
+    return ((a + b) * f + d["X_RISE"] - d["X_POLL"]) // 2
+
+
+def change(d, a, b, f):
+    """X_CHANGE: change between drive reads a and b in clocks."""
+    return ((a + b) * f - d["X_POLL"] - d["X_RISE"]) // 2 - d["X_SYNC"]
+
+
+def expected(d, name):
+    """[(op, clock)] of the port accesses of routine name."""
+    f = int(re.search(r"(\d+)$", name).group(1))
+    if name.startswith("xb_"):
+        w = [d[f"XBW{i}"] for i in range(5)]
+        r = [d[f"XBR{i}"] for i in range(5)]
+        if "rx" in name:
+            per = d["XBWN"] * f
+            return [
+                ("in", sample(d, w[k], w[k + 1], f) + i * per)
+                for i in range(BURST)
+                for k in range(4)
+            ]
+        per, out = d["XBRN"] * f, [d["X_FOUND"]]
+        for i in range(BURST):
+            out += [change(d, r[k], r[k + 1], f) + i * per for k in (1, 2, 3)]
+            nxt = change(d, r[4], r[1] + d["XBRN"], f) + i * per
+            out.append(nxt if i + 1 < BURST else (r[4] + 4) * f + i * per)
+        return [("out", t) for t in out]
     w = [d[f"XW{i}"] for i in range(5)]
     r = [d[f"XR{i}"] for i in range(5)]
-    rise, poll, sync = d["X_RISE"], d["X_POLL"], d["X_SYNC"]
-    sample = [((w[k] + w[k + 1]) * f + rise - poll) // 2 for k in range(4)]
-    change = [((r[k] + r[k + 1]) * f - poll - rise) // 2 - sync for k in range(1, 4)]
-    return sample, [d["X_FOUND"]] + change + [(r[4] + 4) * f]
+    if "rx" in name:
+        return [("in", sample(d, w[k], w[k + 1], f)) for k in range(4)]
+    out = [d["X_FOUND"]] + [change(d, r[k], r[k + 1], f) for k in range(1, 4)]
+    return [("out", t) for t in out + [(r[4] + 4) * f]]
 
 
 def routines(elf):
-    """{name: [(addr, mnemonic, operands, target)]} for the x_rx/x_tx routines."""
+    """{name: [(addr, mnemonic, operands, target)]} for the X routines."""
     out = subprocess.run(
         ["avr-objdump", "-d", elf], check=True, capture_output=True, text=True
     ).stdout
     funcs, cur = {}, None
     for line in out.splitlines():
-        m = re.match(r"[0-9a-f]+ <(x_[rt]x(?:8|16))[.\w]*>:", line)
+        m = re.match(r"[0-9a-f]+ <(xb?_[rt]x(?:8|16))[.\w]*>:", line)
         if m:
             cur = funcs.setdefault(m.group(1), [])
         elif cur is not None and (m := LINE.match(line)):
@@ -52,17 +82,19 @@ def routines(elf):
 def run(code, start, count):
     """Clocks of the first count in/out after the detecting sbic at index start."""
     at = {a: i for i, (a, *_) in enumerate(code)}
-    regs, t, i, events = {}, 2, start + 2, []
+    regs, zero, t, i, events = {}, False, 2, start + 2, []
     while len(events) < count:
         _, op, args, target = code[i]
         if op in ("in", "out"):
             events.append((op, t))
         if op == "ldi":
             reg, val = args.split(",")
-            regs[reg.strip()] = int(val, 0)
+            regs[reg.strip()] = int(val, 0) & 0xFF
         elif op == "dec":
-            regs[args] -= 1
-        if op == "brne" and regs["r23"]:
+            bank = code[i + 1][1] == "brne" and code[i + 2][1] == "lds"
+            regs[args] = (regs.get(args, BANK if bank else BURST) - 1) & 0xFF
+            zero = regs[args] == 0
+        if op in ("brne", "breq") and (op == "breq") == zero:
             t, i = t + 2, at[target]
         elif op == "rjmp":
             t, i = t + 2, at[target]
@@ -76,8 +108,7 @@ def main(argv):
     with open(argv[2] if len(argv) > 2 else "x.c", encoding="utf-8") as fh:
         d, bad = defines(fh.read()), 0
     for name, code in sorted(routines(argv[1]).items()):
-        sample, change = expected(d, int(name[4:]))
-        want = [("in", t) for t in sample] if "rx" in name else [("out", t) for t in change]
+        want = expected(d, name)
         for s, c in enumerate(code):
             if c[1] == "sbic" and code[s + 2][1] == "rjmp":
                 got = run(code, s, len(want))

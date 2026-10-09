@@ -32,7 +32,7 @@ MODELS_SUPPORTED= ZOOMFLOPPY PROMICRO PROMICRO_7406
 ### Nothing user-configurable beyond this point ###
 
 # Firmware version. Bump when changing the firmware code.
-XUMFW_VERSION= 09
+XUMFW_VERSION= 10
 
 all: $(MODELS_SUPPORTED)
 

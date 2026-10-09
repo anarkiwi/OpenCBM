@@ -78,7 +78,10 @@ no device-side abort). The X protocol (`xum1541/x.c`, capability
 `XUM1541_CAP_X`, `XUM1541_X` read/write, plugin `opencbm_plugin_x[2]_read_n` /
 `x[2]_write_n`) is specified in nybulah `docs/protocol.md`;
 `xum1541/misc/x_timing.py` checks the compiled sample/drive clocks against the
-schedule and runs in `Dockerfile.nybulah`.
+schedule and runs in `Dockerfile.nybulah`. Version 10 adds burst X (`XUM_X_BURST`: one
+go/SYNC per 64-byte burst, adapter following the drive's loop open-loop;
+plugin `opencbm_plugin_xb[2]_read_n` / `xb[2]_write_n`, -1 below version 10),
+specified in nybulah `docs/protocol.md` and checked by the same script.
 
 ## Remaining limits
 

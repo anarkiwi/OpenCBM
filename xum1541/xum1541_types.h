@@ -15,7 +15,7 @@
 #define XUM1541_PID                 0x0504
 
 // XUM1541_INIT reports this versions
-#define XUM1541_VERSION             9
+#define XUM1541_VERSION             10
 #define XUM1541_MINIMUM_COMPATIBLE_VERSION 7
 
 // USB parameters for descriptor configuration
@@ -166,6 +166,7 @@
 
 // Flags for use with XUM1541_X protocol
 #define XUM_X_2MHZ                  (1 << 0)
+#define XUM_X_BURST                 (1 << 1) // burst X (version 10)
 
 // Flags for use with write and XUM1541_CBM protocol
 #define XUM_WRITE_TALK              (1 << 0)
