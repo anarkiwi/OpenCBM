@@ -8,4 +8,8 @@ EXPORTS
     opencbm_plugin_xb_write_n
     opencbm_plugin_xb2_read_n
     opencbm_plugin_xb2_write_n
+    opencbm_plugin_srq_read_n
+    opencbm_plugin_srq_write_n
+    opencbm_plugin_srq2_read_n
+    opencbm_plugin_srq2_write_n
     opencbm_plugin_xum1541_set_timeout

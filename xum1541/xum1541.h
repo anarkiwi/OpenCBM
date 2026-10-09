@@ -247,6 +247,8 @@ uint16_t x_read_loop(uint16_t len, uint8_t flags, bool *ok);
 uint16_t x_write_loop(uint16_t len, uint8_t flags, bool *ok);
 uint16_t xb_read_loop(uint16_t len, uint8_t flags, bool *ok);
 uint16_t xb_write_loop(uint16_t len, uint8_t flags, bool *ok);
+uint16_t srq_read_loop(uint16_t len, uint8_t flags, bool *ok);
+uint16_t srq_write_loop(uint16_t len, uint8_t flags, bool *ok);
 #ifdef TAPE_SUPPORT
 uint16_t Tape_GetTapeFirmwareVersion(void); // Return tape firmware version for compatibility check.
 uint16_t Tape_UploadConfig(void);           // Upload tape read/write configuration.

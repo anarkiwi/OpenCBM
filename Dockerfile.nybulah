@@ -25,6 +25,7 @@ WORKDIR /src/xum1541
 RUN rm -f xum1541-*.hex && make ${FIRMWARE_MODEL} \
     && python3 misc/x_timing.py obj/${FIRMWARE_MODEL}/xum1541-${FIRMWARE_MODEL}-v*.bin x.c \
     && gcc -Wall -Werror -I. -o /tmp/xb_ready_test misc/xb_ready_test.c && /tmp/xb_ready_test \
+    && gcc -Wall -Werror -I. -o /tmp/srq_timing_test misc/srq_timing_test.c && /tmp/srq_timing_test \
     && mkdir -p /out \
     && cp xum1541-${FIRMWARE_MODEL}-v*.hex /out/ \
     && avr-size obj/${FIRMWARE_MODEL}/xum1541-${FIRMWARE_MODEL}-v*.bin > /out/size.txt

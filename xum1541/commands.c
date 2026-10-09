@@ -752,7 +752,9 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
             ret = rwStatus(request[1], status, count, count == len);
             break;
         case XUM1541_X:
-            count = (request[1] & XUM_X_BURST ? xb_read_loop : x_read_loop)(
+            count = (request[1] & XUM_X_SRQ     ? srq_read_loop
+                     : request[1] & XUM_X_BURST ? xb_read_loop
+                                                : x_read_loop)(
                 len, XUM_RW_FLAGS(request[1]), &ok);
             ret = rwStatus(XUM_RW_STATUS, status, count, ok);
             break;
@@ -819,7 +821,9 @@ usbHandleBulk(uint8_t *request, uint8_t *status)
             ret = rwStatus(request[1], status, count, count == len);
             break;
         case XUM1541_X:
-            count = (request[1] & XUM_X_BURST ? xb_write_loop : x_write_loop)(
+            count = (request[1] & XUM_X_SRQ     ? srq_write_loop
+                     : request[1] & XUM_X_BURST ? xb_write_loop
+                                                : x_write_loop)(
                 len, XUM_RW_FLAGS(request[1]), &ok);
             ret = rwStatus(XUM_RW_STATUS, status, count, ok);
             break;

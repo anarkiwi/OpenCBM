@@ -512,3 +512,115 @@ opencbm_plugin_xb2_write_n(CBM_FILE HandleDevice, const unsigned char *data, uns
 {
     return xum1541_xb_write(HandleDevice, XUM_X_2MHZ, data, size);
 }
+
+/*
+ * SRQ fast serial transfer (firmware version 11 and later with
+ * XUM1541_CAP_SRQ), mode XUM1541_X with XUM_X_SRQ and optionally XUM_X_2MHZ,
+ * for a 1571 running nybulah's SRQ drive code. Returns the count only if all
+ * bytes were transferred, else -1, also when the firmware lacks the protocol.
+ */
+static int
+xum1541_srq_ok(void)
+{
+    return DeviceFirmwareVersion >= 11 && (DeviceCapabilities & XUM1541_CAP_SRQ) != 0;
+}
+
+static int
+xum1541_srq_read(CBM_FILE HandleDevice, unsigned char flags, unsigned char *data, unsigned int size)
+{
+    if (!xum1541_srq_ok())
+        return -1;
+    return xum1541_read_status(HandleDevice, XUM1541_X | XUM_X_SRQ | flags, data, size);
+}
+
+static int
+xum1541_srq_write(CBM_FILE HandleDevice, unsigned char flags, const unsigned char *data, unsigned int size)
+{
+    if (!xum1541_srq_ok())
+        return -1;
+    return xum1541_write_status(HandleDevice, XUM1541_X | XUM_X_SRQ | flags, data, size);
+}
+
+/*! \brief Read data with SRQ fast serial (1571)
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer which will hold the read bytes.
+
+  \param size
+    The size of the data buffer the read bytes will be written to.
+
+  \return
+    The number of bytes read, or -1 if not all of them could be read or
+    the firmware lacks SRQ fast serial (version 11).
+*/
+int CBMAPIDECL
+opencbm_plugin_srq_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned int size)
+{
+    return xum1541_srq_read(HandleDevice, 0, data, size);
+}
+
+/*! \brief Write data with SRQ fast serial (1571)
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer to be written
+
+  \param size
+    The size of the data buffer to be written
+
+  \return
+    The number of bytes written, or -1 if not all of them could be written
+    or the firmware lacks SRQ fast serial (version 11).
+*/
+int CBMAPIDECL
+opencbm_plugin_srq_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
+{
+    return xum1541_srq_write(HandleDevice, 0, data, size);
+}
+
+/*! \brief Read data with SRQ fast serial from a 1571 at 2 MHz
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer which will hold the read bytes.
+
+  \param size
+    The size of the data buffer the read bytes will be written to.
+
+  \return
+    The number of bytes read, or -1 if not all of them could be read or
+    the firmware lacks SRQ fast serial (version 11).
+*/
+int CBMAPIDECL
+opencbm_plugin_srq2_read_n(CBM_FILE HandleDevice, unsigned char *data, unsigned int size)
+{
+    return xum1541_srq_read(HandleDevice, XUM_X_2MHZ, data, size);
+}
+
+/*! \brief Write data with SRQ fast serial to a 1571 at 2 MHz
+
+  \param HandleDevice
+    A CBM_FILE which contains the file handle of the driver.
+
+  \param data
+    Pointer to the data buffer to be written
+
+  \param size
+    The size of the data buffer to be written
+
+  \return
+    The number of bytes written, or -1 if not all of them could be written
+    or the firmware lacks SRQ fast serial (version 11).
+*/
+int CBMAPIDECL
+opencbm_plugin_srq2_write_n(CBM_FILE HandleDevice, const unsigned char *data, unsigned int size)
+{
+    return xum1541_srq_write(HandleDevice, XUM_X_2MHZ, data, size);
+}

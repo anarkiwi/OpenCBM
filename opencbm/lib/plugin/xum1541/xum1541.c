@@ -40,6 +40,7 @@ static int debug_level = -1; /*!< \internal \brief the debugging level for debug
 
 unsigned char DeviceDriveMode; // Temporary disk/tape mode hack until usb device handle context is there.
 unsigned char DeviceFirmwareVersion; // Firmware version reported by XUM1541_INIT.
+unsigned char DeviceCapabilities;    // Capabilities reported by XUM1541_INIT.
 
 static unsigned int fw_timeout_ms = XUM1541_IO_TIMEOUT_MS; // Firmware I/O idle timeout, 0 if disabled.
 
@@ -627,6 +628,7 @@ xum1541_init(struct opencbm_usb_handle **HandleXum1541_p, int PortNumber)
     // Place after "opencbm_usb_handle" allocation:
     /*uh->*/DeviceDriveMode = DeviceDriveMode_Uninit;
     DeviceFirmwareVersion = 0;
+    DeviceCapabilities = 0;
 
     *HandleXum1541_p = HandleXum1541 = malloc(sizeof(struct opencbm_usb_handle));
     if (HandleXum1541 == NULL) {
@@ -724,6 +726,7 @@ xum1541_init(struct opencbm_usb_handle **HandleXum1541_p, int PortNumber)
             break;
         }
         DeviceFirmwareVersion = devInfo[0];
+        DeviceCapabilities = devInfo[1];
         if (len >= 4) {
             xum1541_dbg(0, "device capabilities %02x status %02x",
                 devInfo[1], devInfo[2]);

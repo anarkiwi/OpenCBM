@@ -81,7 +81,12 @@ no device-side abort). The X protocol (`xum1541/x.c`, capability
 schedule and runs in `Dockerfile.nybulah`. Version 10 adds burst X (`XUM_X_BURST`: one
 go/SYNC per 64-byte burst, adapter following the drive's loop open-loop;
 plugin `opencbm_plugin_xb[2]_read_n` / `xb[2]_write_n`, -1 below version 10),
-specified in nybulah `docs/protocol.md` and checked by the same script.
+specified in nybulah `docs/protocol.md` and checked by the same script. Version 11
+adds SRQ fast serial for a 1571 (`XUM_X_SRQ`, capability `XUM1541_CAP_SRQ`): the
+drive's CIA shift register on SRQ/DATA, timed from `x_timing.h`; plugin
+`opencbm_plugin_srq[2]_read_n` / `srq[2]_write_n`, -1 below version 11 or
+without the capability. `misc/x_timing.py` steps the SRQ routines too and
+`misc/srq_timing_test.c` checks the schedule's windows on the host.
 
 ## Remaining limits
 

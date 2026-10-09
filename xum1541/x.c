@@ -16,6 +16,7 @@
  * is watched for X_GRACE more drive cycles, so a drive that already saw go is
  * still served; otherwise interrupts and TimerWorker() run before retrying.
  */
+#include "x_timing.h"
 #include "xb_ready.h"
 #include "xum1541.h"
 
@@ -24,13 +25,6 @@
 #if F_CPU != 16000000
 #error "X protocol offsets assume a 16 MHz adapter clock"
 #endif
-
-/* Adapter clocks: release settling budget, SYNC poll loop, synchroniser. */
-#define X_RISE 16
-#define X_POLL 6
-#define X_SYNC 1
-/* Drive cycles watched after withdrawing go; the drive needs <= 18. */
-#define X_GRACE 32
 
 /* Drive -> host: drive cycles after SYNC of P0..P3 and the earliest REL. */
 #define XW0 13
@@ -44,14 +38,6 @@
 #define XR2 21
 #define XR3 34
 #define XR4 43
-
-/* Centre of window [a, b) (drive cycles, f clocks each), minus poll jitter. */
-#define X_SAMPLE(a, b, f) ((((a) + (b)) * (f) + X_RISE - X_POLL) / 2)
-/* Change between drive reads a and b, settled before b, after a. */
-#define X_CHANGE(a, b, f) ((((a) + (b)) * (f) - X_POLL - X_RISE) / 2 - X_SYNC)
-
-/* Clocks from the detecting sbic to the first instruction after it. */
-#define X_FOUND 4
 
 __asm__(".macro xdelay n\n"
         " .if (\\n) < 0\n"
@@ -69,29 +55,30 @@ __asm__(".macro xdelay n\n"
         " .endif\n"
         ".endm\n"
         /*
-         * Wait for CLK released then asserted, 6 clocks per poll, counter in
-         * \c (sbiw pair) with \lo:\hi its halves. Falls through 4 clocks after
-         * the detecting sbic, or branches to \fail with go withdrawn.
+         * Wait for SYNC (pin bit sb, CLK by default) released then asserted,
+         * 6 clocks per poll, counter in \c (sbiw pair) with \lo:\hi its
+         * halves. Falls through 4 clocks after the detecting sbic, or branches
+         * to \fail with go (port bit gb, DATA by default) withdrawn.
          */
-        ".macro xsync c, lo, hi, grace, fail, pin, port\n"
+        ".macro xsync c, lo, hi, grace, fail, pin, port, sb=1, gb=3\n"
         "5: sbiw \\c, 1\n"
         "  breq 8f\n"
-        "  sbis \\pin, 1\n"
+        "  sbis \\pin, \\sb\n"
         "  rjmp 5b\n"
         "6: sbiw \\c, 1\n"
         "  breq 7f\n"
-        "  sbic \\pin, 1\n"
+        "  sbic \\pin, \\sb\n"
         "  rjmp 6b\n"
         "  rjmp 9f\n"
-        "7: cbi \\port, 3\n"
+        "7: cbi \\port, \\gb\n"
         "  ldi \\lo, lo8(\\grace)\n"
         "  ldi \\hi, hi8(\\grace)\n"
         "4: sbiw \\c, 1\n"
         "  breq \\fail\n"
-        "  sbic \\pin, 1\n"
+        "  sbic \\pin, \\sb\n"
         "  rjmp 4b\n"
         "  rjmp 9f\n"
-        "8: cbi \\port, 3\n"
+        "8: cbi \\port, \\gb\n"
         "  rjmp \\fail\n"
         "9:\n"
         ".endm\n");
@@ -516,6 +503,225 @@ uint16_t xb_write_loop(uint16_t len, uint8_t flags, bool *ok) {
   return n;
 }
 
+/*
+ * SRQ fast serial (firmware v11, 1571 only): the drive's 6526 shifts bytes MSB
+ * first on DATA, clocked by SRQ (its CNT), both through the bus drivers that
+ * VIA1 PA1 turns (nybulah drive/proto_srq.inc, docs/protocol.md). With timer
+ * A at latch 1 CNT falls with each new bit on DATA and rises SRQ_U cycles
+ * later. Drive -> host: go on CLK, then the adapter times each byte from its
+ * first SRQ fall and samples DATA in mid-window; it then polls for the next
+ * byte's fall between the last rise settling and the drive's earliest next
+ * byte. Host -> drive: go on DATA and SYNC on CLK as burst X, then the
+ * adapter clocks SRQ with DATA valid on each rise, at a bit period giving the
+ * DATA set-up (SRQ low >= X_RISE) and hold (SRQ high >= X_RISE plus a drive
+ * cycle of sampling) the slack of the tightest 2 MHz read window, SRQ_SIGMA,
+ * and a byte period no shorter than the drive's receive loop.
+ */
+#if IO_SRQ != _BV(4) || IO_SRQ_IN != _BV(5)
+#error "SRQ protocol assumes the ZoomFloppy SRQ pins"
+#endif
+
+/* srq_rx results besides the bytes still missing: no first fall at all. */
+#define SRQ_NOSYNC 0xff
+
+__asm__(".macro srqin s, b, j, d, pin\n"
+        "  in \\s, \\pin\n"
+        "  bst \\s, 2\n"
+        "  bld \\b, \\j\n"
+        "  xdelay \\d\n"
+        ".endm\n"
+        /* Bit j of ~b on DATA with SRQ asserted, SRQ released after lo + 2
+         * clocks, next bit's port write hi + 4 clocks later. */
+        ".macro srqbit p, bs, b, j, lo, hi, port\n"
+        "  mov \\p, \\bs\n"
+        "  bst \\b, \\j\n"
+        "  bld \\p, 3\n"
+        "  out \\port, \\p\n"
+        "  xdelay \\lo\n"
+        "  andi \\p, 0xef\n"
+        "  out \\port, \\p\n"
+        "  xdelay \\hi\n"
+        ".endm\n");
+
+/*
+ * Drive -> host SRQ burst of k bytes at f clocks per drive cycle into the IN
+ * endpoint, its bank sent after c bytes if c is not 0. Returns the bytes not
+ * received (0 when complete) or SRQ_NOSYNC if the first fall never came.
+ */
+#define SRQ_RX(f)                                                              \
+  static __attribute__((noinline)) uint8_t srq_rx##f(uint16_t n, uint8_t k,    \
+                                                     uint8_t c) {              \
+    uint8_t s, b, t, w;                                                        \
+    __asm__ volatile(                                                          \
+        "rjmp 15f\n"                                                           \
+        "14: rjmp 2f\n"                                                        \
+        "15: xsync %A[n], %A[n], %B[n], %[g], 14b, %[pin], %[port], 5, 0\n"    \
+        "21: cbi %[port], 0\n"                                                 \
+        "  xdelay %[d0]\n"                                                     \
+        "  srqin %[s], %[b], 7, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 6, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 5, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 4, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 3, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 2, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 1, %[dj], %[pin]\n"                               \
+        "  srqin %[s], %[b], 0, 0, %[pin]\n"                                   \
+        "  sts %[fifo], %[b]\n"                                                \
+        "  xbbank %[c], %[t], %[in], %[ue]\n"                                  \
+        "  dec %[k]\n"                                                         \
+        "  breq 3f\n"                                                          \
+        "  xdelay %[dp]\n"                                                     \
+        "  ldi %[w], %[wn]\n"                                                  \
+        "22: dec %[w]\n"                                                       \
+        "  breq 3f\n"                                                          \
+        "  sbis %[pin], 5\n"                                                   \
+        "  rjmp 22b\n"                                                         \
+        "23: dec %[w]\n"                                                       \
+        "  breq 3f\n"                                                          \
+        "  sbic %[pin], 5\n"                                                   \
+        "  rjmp 23b\n"                                                         \
+        "  rjmp 21b\n"                                                         \
+        "2: ldi %[k], %[nosync]\n"                                             \
+        "3:\n"                                                                 \
+        : [n] "+w"(n), [k] "+d"(k), [c] "+r"(c), [s] "=&r"(s), [b] "=&r"(b),   \
+          [t] "=&d"(t), [w] "=&d"(w)                                           \
+        : [pin] "I"(_SFR_IO_ADDR(PIND)), [port] "I"(_SFR_IO_ADDR(PORTD)),      \
+          [fifo] "n"(_SFR_MEM_ADDR(UEDATX)), [ue] "n"(_SFR_MEM_ADDR(UEINTX)),  \
+          [in] "n"(_BV(TXINI) | _BV(FIFOCON)), [nosync] "n"(SRQ_NOSYNC),       \
+          [g] "i"(X_GRACE * (f) / X_POLL), [wn] "n"(SRQ_POLLS(f)),             \
+          [d0] "i"(SRQ_SAMPLE(0, f) - X_FOUND - 2),                            \
+          [dj] "i"(SRQ_SAMPLE(1, f) - SRQ_SAMPLE(0, f) - 3),                   \
+          [dp] "i"(SRQ_START(f) - SRQ_SAMPLE(7, f) - 3 - 2 - XB_BANKSW - 2 -   \
+                   1 - 2)                                                      \
+        : "r23", "memory");                                                    \
+    return k;                                                                  \
+  }
+
+/*
+ * Host -> drive SRQ burst of k bytes: b0 is the first byte, the rest come from
+ * the OUT endpoint, switching banks after c more if c is not 0; base is PORTD
+ * with SRQ, CLK and DATA released. Returns false if the drive never sent SYNC.
+ */
+#define SRQ_TX(f)                                                              \
+  static __attribute__((noinline)) bool srq_tx##f(                             \
+      uint16_t n, uint8_t k, uint8_t c, uint8_t b0, uint8_t base) {            \
+    uint8_t ok, p, t, bs = base | IO_SRQ;                                      \
+    __asm__ volatile(                                                          \
+        "ldi %[ok], 0\n"                                                       \
+        "com %[b]\n"                                                           \
+        "rjmp 15f\n"                                                           \
+        "14: rjmp 2f\n"                                                        \
+        "15: xsync %A[n], %A[n], %B[n], %[g], 14b, %[pin], %[port]\n"          \
+        "20: srqbit %[p], %[bs], %[b], 7, %[lo], %[hi], %[port]\n"             \
+        "  srqbit %[p], %[bs], %[b], 6, %[lo], %[hi], %[port]\n"               \
+        "  srqbit %[p], %[bs], %[b], 5, %[lo], %[hi], %[port]\n"               \
+        "  srqbit %[p], %[bs], %[b], 4, %[lo], %[hi], %[port]\n"               \
+        "  srqbit %[p], %[bs], %[b], 3, %[lo], %[hi], %[port]\n"               \
+        "  srqbit %[p], %[bs], %[b], 2, %[lo], %[hi], %[port]\n"               \
+        "  srqbit %[p], %[bs], %[b], 1, %[lo], %[hi], %[port]\n"               \
+        "  srqbit %[p], %[bs], %[b], 0, %[lo], 0, %[port]\n"                   \
+        "  dec %[k]\n"                                                         \
+        "  breq 3f\n"                                                          \
+        "  lds %[b], %[fifo]\n"                                                \
+        "  com %[b]\n"                                                         \
+        "  xbbank %[c], %[t], %[out], %[ue]\n"                                 \
+        "  xdelay %[dn]\n"                                                     \
+        "  rjmp 20b\n"                                                         \
+        "3: xdelay %[dr]\n"                                                    \
+        "  out %[port], %[base]\n"                                             \
+        "  ldi %[ok], 1\n"                                                     \
+        "2:\n"                                                                 \
+        : [ok] "=&d"(ok), [n] "+w"(n), [k] "+r"(k), [c] "+r"(c), [b] "+r"(b0), \
+          [p] "=&d"(p), [t] "=&d"(t)                                           \
+        : [pin] "I"(_SFR_IO_ADDR(PIND)), [port] "I"(_SFR_IO_ADDR(PORTD)),      \
+          [fifo] "n"(_SFR_MEM_ADDR(UEDATX)), [ue] "n"(_SFR_MEM_ADDR(UEINTX)),  \
+          [out] "n"(_BV(RXOUTI) | _BV(FIFOCON)), [base] "r"(base),             \
+          [bs] "r"(bs), [g] "i"(X_GRACE * (f) / X_POLL),                       \
+          [lo] "i"(SRQ_LOW(f) - 2), [hi] "i"(SRQ_HIGH(f) - 4),                 \
+          [dn] "i"(SRQ_HIGH(f) - 1 - 1 - 1 - 2 - 1 - XB_BANKSW - 2 -           \
+                   SRQ_ENCODE),                                                \
+          [dr] "i"(SRQ_HIGH(f) - 1 - 2 - 1)                                    \
+        : "r23", "memory");                                                    \
+    return ok;                                                                 \
+  }
+
+SRQ_RX(16)
+SRQ_RX(8)
+SRQ_TX(16)
+SRQ_TX(8)
+
+uint16_t srq_read_loop(uint16_t len, uint8_t flags, bool *ok) {
+  uint16_t n = 0;
+  uint8_t k, c, r = 0;
+
+  usbInitIo(len, ENDPOINT_DIR_IN);
+  iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+  while (n < len && r == 0 && TimerWorker()) {
+    if (!Endpoint_IsReadWriteAllowed() || !xb_in_ready(XB_BUSY()))
+      continue;
+    k = len - n > XB_BURST ? XB_BURST : len - n;
+    c = k > XB_BANK ? XB_BANK : 0;
+    cli();
+    iec_set(IO_CLK);
+    r = (flags & XUM_X_2MHZ) ? srq_rx8(X_SLICE, k, c) : srq_rx16(X_SLICE, k, c);
+    sei();
+    if (r == SRQ_NOSYNC) {
+      r = 0;
+      continue;
+    }
+    IoProgress();
+    n += k - r;
+    if (Endpoint_BytesInEndpoint() != 0)
+      Endpoint_ClearIN();
+  }
+  iec_release(IO_CLK);
+  Set_usbDataLen(len - n);
+  usbIoDone();
+  *ok = n == len;
+  return n;
+}
+
+uint16_t srq_write_loop(uint16_t len, uint8_t flags, bool *ok) {
+  uint16_t n = 0, used = 0;
+  uint8_t k, c, b0, base;
+  bool sent = false;
+
+  usbInitIo(len, ENDPOINT_DIR_OUT);
+  iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+  base = PORTD & ~(IO_CLK | IO_DATA | IO_SRQ);
+  while (n < len && TimerWorker()) {
+    k = len - n > XB_BURST ? XB_BURST : len - n;
+    if (!Endpoint_IsReadWriteAllowed()) {
+      Endpoint_ClearOUT();
+      while (!Endpoint_IsReadWriteAllowed() && TimerWorker())
+        ;
+      continue;
+    }
+    if (!xb_out_ready(k, Endpoint_BytesInEndpoint(), XB_BUSY(), XB_BANK))
+      continue;
+    c = k > XB_BANK ? XB_BANK - 1 : 0;
+    b0 = Endpoint_Read_Byte();
+    used++;
+    do {
+      cli();
+      iec_set(IO_DATA);
+      sent = (flags & XUM_X_2MHZ) ? srq_tx8(X_SLICE, k, c, b0, base)
+                                  : srq_tx16(X_SLICE, k, c, b0, base);
+      sei();
+    } while (!sent && TimerWorker());
+    if (!sent)
+      break;
+    IoProgress();
+    n += k;
+    used = n;
+  }
+  iec_release(IO_SRQ | IO_CLK | IO_DATA);
+  Set_usbDataLen(len - used);
+  usbIoDone();
+  *ok = n == len;
+  return n;
+}
+
 #else
 
 uint16_t x_read_loop(uint16_t len, uint8_t flags, bool *ok) {
@@ -539,6 +745,14 @@ uint16_t xb_read_loop(uint16_t len, uint8_t flags, bool *ok) {
 }
 
 uint16_t xb_write_loop(uint16_t len, uint8_t flags, bool *ok) {
+  return x_write_loop(len, flags, ok);
+}
+
+uint16_t srq_read_loop(uint16_t len, uint8_t flags, bool *ok) {
+  return x_read_loop(len, flags, ok);
+}
+
+uint16_t srq_write_loop(uint16_t len, uint8_t flags, bool *ok) {
   return x_write_loop(len, flags, ok);
 }
 

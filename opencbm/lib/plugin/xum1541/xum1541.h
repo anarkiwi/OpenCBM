@@ -91,5 +91,6 @@ int xum1541_resync(struct opencbm_usb_handle *HandleXum1541);
 
 // Firmware version reported by XUM1541_INIT
 extern unsigned char DeviceFirmwareVersion;
+extern unsigned char DeviceCapabilities;
 
 #endif // XUM1541_H

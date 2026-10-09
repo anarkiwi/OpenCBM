@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 """Check the X protocol's compiled port timing against the schedules in x.c.
 
-Steps each x_rx/x_tx and burst xb_rx/xb_tx routine from every SYNC-detecting sbic
-and compares each in/out clock with X_SAMPLE/X_CHANGE; bursts run BURST bytes and
-switch USB banks after BANK (a counter whose dec guards an lds).
-usage: x_timing.py ELF [x.c]
+Steps each x_rx/x_tx, burst xb_rx/xb_tx and SRQ srq_rx/srq_tx routine from every
+detecting sbic and compares each in/out clock (and srq_rx's next-byte poll, an sbis
+seeing SRQ released) with the x.c formulas; bursts run BURST bytes and switch USB
+banks after BANK (a counter whose dec guards an lds). usage: x_timing.py ELF [x.c] (x_timing.h beside x.c is read too)
 """
 
+import os
 import re
 import subprocess
 import sys
@@ -21,7 +22,7 @@ LINE = re.compile(
 
 def defines(src):
     """Integer #defines of x.c."""
-    return {k: int(v) for k, v in re.findall(r"#define (X\w+) (\d+)\b", src)}
+    return {k: int(v) for k, v in re.findall(r"#define ((?:X|SRQ)_?\w+) (\d+)\b", src)}
 
 
 def sample(d, a, b, f):
@@ -34,9 +35,33 @@ def change(d, a, b, f):
     return ((a + b) * f - d["X_POLL"] - d["X_RISE"]) // 2 - d["X_SYNC"]
 
 
+def srq(d, f):
+    """SRQ clocks: read samples, next-byte poll, write bit/low/byte periods."""
+    last, sig = 15 * d["SRQ_U"], (16 * d["SRQ_U"] - d["X_RISE"] - d["X_POLL"]) // 2
+    loop = ((d["SRQ_RLOOP"] + 1) * f + d["X_RISE"] + sig + 7) // 8
+    bit = max(2 * (d["X_RISE"] + sig) + f, loop)
+    u = 2 * d["SRQ_U"]
+    return (
+        [sample(d, u * j, u * (j + 1), f) for j in range(8)],
+        sample(d, last, last + d["SRQ_GMIN"], f),
+        bit,
+        (bit - f) // 2,
+    )
+
+
 def expected(d, name):
     """[(op, clock)] of the port accesses of routine name."""
     f = int(re.search(r"(\d+)$", name).group(1))
+    if name.startswith("srq_"):
+        samples, start, bit, low = srq(d, f)
+        if "rx" in name:
+            return [("in", t) for t in samples] + [("poll", start)]
+        first, out = d["X_FOUND"] + d["SRQ_ENCODE"], []
+        for i in range(BURST):
+            for k in range(8):
+                t = first + (8 * i + k) * bit
+                out += [t, t + low]
+        return [("out", t) for t in out + [out[-1] + bit - low]]
     if name.startswith("xb_"):
         w = [d[f"XBW{i}"] for i in range(5)]
         r = [d[f"XBR{i}"] for i in range(5)]
@@ -68,7 +93,7 @@ def routines(elf):
     ).stdout
     funcs, cur = {}, None
     for line in out.splitlines():
-        m = re.match(r"[0-9a-f]+ <(xb?_[rt]x(?:8|16))[.\w]*>:", line)
+        m = re.match(r"[0-9a-f]+ <((?:xb?|srq)_[rt]x(?:8|16))[.\w]*>:", line)
         if m:
             cur = funcs.setdefault(m.group(1), [])
         elif cur is not None and (m := LINE.match(line)):
@@ -87,6 +112,10 @@ def run(code, start, count):
         _, op, args, target = code[i]
         if op in ("in", "out"):
             events.append((op, t))
+        if op == "sbis":
+            events.append(("poll", t))
+            t, i = t + 2, i + 2
+            continue
         if op == "ldi":
             reg, val = args.split(",")
             regs[reg.strip()] = int(val, 0) & 0xFF
@@ -105,8 +134,10 @@ def run(code, start, count):
 
 def main(argv):
     """Exit status 1 on any mismatch."""
-    with open(argv[2] if len(argv) > 2 else "x.c", encoding="utf-8") as fh:
-        d, bad = defines(fh.read()), 0
+    src = argv[2] if len(argv) > 2 else "x.c"
+    head = os.path.join(os.path.dirname(src), "x_timing.h")
+    with open(src, encoding="utf-8") as fh, open(head, encoding="utf-8") as fh2:
+        d, bad = defines(fh.read() + fh2.read()), 0
     for name, code in sorted(routines(argv[1]).items()):
         want = expected(d, name)
         for s, c in enumerate(code):
