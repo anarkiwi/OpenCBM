@@ -16,6 +16,7 @@
  * is watched for X_GRACE more drive cycles, so a drive that already saw go is
  * still served; otherwise interrupts and TimerWorker() run before retrying.
  */
+#include "xb_ready.h"
 #include "xum1541.h"
 
 #ifdef X_SUPPORT
@@ -441,8 +442,8 @@ XB_RX(8)
 XB_TX(16)
 XB_TX(8)
 
-/* Busy banks of the selected endpoint. */
-#define XB_BUSY (_BV(NBUSYBK0) | _BV(NBUSYBK1))
+/* Busy banks of the selected endpoint, a count (0..2). */
+#define XB_BUSY() (UESTA0X & (_BV(NBUSYBK0) | _BV(NBUSYBK1)))
 
 uint16_t xb_read_loop(uint16_t len, uint8_t flags, bool *ok) {
   uint16_t n = 0;
@@ -452,7 +453,7 @@ uint16_t xb_read_loop(uint16_t len, uint8_t flags, bool *ok) {
   usbInitIo(len, ENDPOINT_DIR_IN);
   iec_release(IO_ATN | IO_CLK | IO_DATA);
   while (n < len && TimerWorker()) {
-    if (!Endpoint_IsReadWriteAllowed() || (UESTA0X & XB_BUSY) != 0)
+    if (!Endpoint_IsReadWriteAllowed() || !xb_in_ready(XB_BUSY()))
       continue;
     k = len - n > XB_BURST ? XB_BURST : len - n;
     c = k > XB_BANK ? XB_BANK : 0;
@@ -490,9 +491,7 @@ uint16_t xb_write_loop(uint16_t len, uint8_t flags, bool *ok) {
         ;
       continue;
     }
-    if (k > XB_BANK ? (UESTA0X & XB_BUSY) != XB_BUSY ||
-                          Endpoint_BytesInEndpoint() != XB_BANK
-                    : Endpoint_BytesInEndpoint() < k)
+    if (!xb_out_ready(k, Endpoint_BytesInEndpoint(), XB_BUSY(), XB_BANK))
       continue;
     c = k > XB_BANK ? XB_BANK - 1 : 0;
     b0 = Endpoint_Read_Byte();

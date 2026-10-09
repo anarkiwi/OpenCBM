@@ -11,6 +11,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         avr-libc \
         binutils-avr \
+        gcc \
+        libc6-dev \
         gcc-avr \
         make \
         python3 \
@@ -22,6 +24,7 @@ COPY xum1541/ /src/xum1541/
 WORKDIR /src/xum1541
 RUN rm -f xum1541-*.hex && make ${FIRMWARE_MODEL} \
     && python3 misc/x_timing.py obj/${FIRMWARE_MODEL}/xum1541-${FIRMWARE_MODEL}-v*.bin x.c \
+    && gcc -Wall -Werror -I. -o /tmp/xb_ready_test misc/xb_ready_test.c && /tmp/xb_ready_test \
     && mkdir -p /out \
     && cp xum1541-${FIRMWARE_MODEL}-v*.hex /out/ \
     && avr-size obj/${FIRMWARE_MODEL}/xum1541-${FIRMWARE_MODEL}-v*.bin > /out/size.txt
