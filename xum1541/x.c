@@ -764,18 +764,23 @@ static __attribute__((noinline)) uint16_t srq_stream8(uint16_t n, uint8_t c,
   return code | (uint16_t)c << 8;
 }
 
-/* Drive gone quiet after ATN: SRQ released this many polls in a row. */
+/*
+ * ATN hold, in polls 1 us or more apart: at least the drive's longest wait
+ * between ATN checks (256 bytes at zone 0 and 285 rpm, 33.7 us each), then
+ * until SRQ has stayed released STREAM_QUIET polls (its longest silence while
+ * streaming is a sync loop run), at most STREAM_ATN.
+ */
+#define STREAM_ATN_MIN 8622U
 #define STREAM_QUIET 1000
-/* Most polls (1 us apart or more) of ATN held. */
 #define STREAM_ATN 50000U
 
-/* ATN stops the drive's stream (drive/stream.s checks it); release it once SRQ
- * has stayed released STREAM_QUIET polls, or after STREAM_ATN. */
+/* ATN stops the drive's stream (drive/stream.s checks it). */
 static void stream_stop(void) {
   uint16_t quiet = 0, n;
 
   iec_set(IO_ATN);
-  for (n = 0; quiet < STREAM_QUIET && n < STREAM_ATN; n++) {
+  for (n = 0; (n < STREAM_ATN_MIN || quiet < STREAM_QUIET) && n < STREAM_ATN;
+       n++) {
     wdt_reset();
     DELAY_US(1);
     quiet = iec_get(IO_SRQ) ? 0 : quiet + 1;
