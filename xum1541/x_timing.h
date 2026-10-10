@@ -13,6 +13,8 @@
 #ifndef X_TIMING_H
 #define X_TIMING_H
 
+#include <stdint.h>
+
 /* Adapter clocks: release settling budget, SYNC poll loop, synchroniser. */
 #define X_RISE 16
 #define X_POLL 6
@@ -68,7 +70,9 @@
 #define SRQ_FRAME(f) (SRQ_LAST * (f) + X_RISE)
 #define SRQ_WAIT(f) ((SRQ_PERIOD - 1) * (f) - X_POLL)
 /* Polls (6 clocks) of the fall wait: 20 ms, over 20 SRQ_PERIODs of metadata
- * gap in the drive's sync loop, under the host's patience. */
-#define SRQ_STREAM_POLLS (20000U * 16 / X_POLL)
+ * gap in the drive's sync loop and the 1581 stream's keepalive interval, under
+ * the host's patience. Long arithmetic: the AVR's unsigned int is 16 bits, and
+ * the product overflows it. The count itself fits the 16-bit register pair. */
+#define SRQ_STREAM_POLLS ((uint16_t)(20000UL * 16 / X_POLL))
 
 #endif

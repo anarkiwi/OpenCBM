@@ -7,8 +7,9 @@ seeing SRQ released) with the x.c formulas; bursts run BURST bytes and switch US
 banks after BANK (a counter whose dec guards an lds). For srq_stream8 it also takes
 every branch after the samples: the poll that must see SRQ released comes at
 SRQ_FRAME or later, the first poll for the next fall at SRQ_WAIT or earlier, and
-that wait polls every X_POLL clocks. usage: x_timing.py ELF [x.c] (x_timing.h beside
-x.c is read too)
+that wait polls every X_POLL clocks and its compiled count is the 20 ms of
+x_timing.h (the AVR's 16-bit int would silently shorten it). usage: x_timing.py ELF
+[x.c] (x_timing.h beside x.c is read too)
 """
 
 import os
@@ -18,6 +19,7 @@ import sys
 
 BURST = 3
 BANK = 2
+STREAM_GAP_US = 20000  # x_timing.h SRQ_STREAM_POLLS: the fall wait
 CYCLES = {"cbi": 2, "sbi": 2, "rjmp": 2, "lds": 2, "sts": 2, "sbiw": 2}
 SKIPS = ("sbrs", "sbrc", "sbis", "sbic", "cpse")
 BRANCHES = ("breq", "brne", "brcs", "brcc", "brmi", "brpl", "brvs", "brvc")
@@ -191,10 +193,26 @@ def stream(d, code):
     sbis_ok = 2 + sum(CYCLES.get(c[1], 1) for c in code[min(frames) + 2 : poll[0]])
     late = hi + sbis_ok
     loop = sum(CYCLES.get(c[1], 1) for c in code[poll[0] - 2 : poll[0] + 2])
+    polls = wait_count(code, poll[0] - 4)
+    want_polls = STREAM_GAP_US * 16 // d["X_POLL"]
     ok = lo >= frame and late <= wait and loop == d["X_POLL"] and first
+    ok = ok and polls == want_polls
     notes.append(f"frame [{lo}, {hi}] >= {frame}, next poll <= {late} <= {wait}")
     notes.append(f"wait loop {loop} clocks per poll")
+    notes.append(f"fall wait {polls} polls == {want_polls}, {polls * loop / 16000:.1f} ms")
     return bad + (not ok), notes
+
+
+def wait_count(code, i):
+    """The 16-bit immediate two ldi at index i load (the compiled fall-wait count), or
+    None when the instructions there are not that pair."""
+    try:
+        lo, hi = (int(code[i + k][2].split(",")[1], 0) for k in (0, 1))
+    except (ValueError, IndexError):
+        return None
+    if code[i][1] != "ldi" or code[i + 1][1] != "ldi":
+        return None
+    return lo | hi << 8
 
 
 def main(argv):
