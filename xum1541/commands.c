@@ -665,6 +665,14 @@ usbHandleControl(uint8_t cmd, uint8_t *replyBuf)
         set_status(STATUS_READY);
         return 0;
     case XUM1541_RESET:
+        /*
+         * The RESET pulse itself waits for the command loop, which a
+         * transfer occupies until it sees the pending reset; release the
+         * lines now so a transfer that stopped mid-handshake (or one that
+         * never polls TimerWorker) does not hold CLK or DATA meanwhile.
+         */
+        if ((currState & (XUM1541_TAPE_PRESENT | XUM1541_IEEE488_PRESENT)) == 0)
+            iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
         // Only do reset if we didn't just reset in INIT (above).
         if ((cmdSeqInProgress & XUM1541_DOING_RESET) == 0)
             pendingReset = true;
