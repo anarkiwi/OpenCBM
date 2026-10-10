@@ -221,6 +221,19 @@ typedef int CBMAPIDECL opencbm_plugin_clear_eoi_t(CBM_FILE HandleDevice);
 */
 typedef int CBMAPIDECL opencbm_plugin_reset_t(CBM_FILE HandleDevice);
 
+/*! \brief Reset the adapter's own state, without a USB reset
+
+ \param HandleDevice
+   A CBM_FILE which contains the file handle of the driver.
+
+ \param ResetBus
+   Nonzero to also reset the drives on the bus.
+
+ \return
+   0 on success, else failure.
+*/
+typedef int CBMAPIDECL opencbm_plugin_adapter_reset_t(CBM_FILE HandleDevice, int ResetBus);
+
 /*! \brief @@@@@ \todo document
 
  \param HandleDevice
@@ -678,6 +691,8 @@ struct opencbm_plugin_s {
 
     opencbm_plugin_get_list_of_configuration_parameter_t * opencbm_plugin_get_list_of_configuration_parameter;
     opencbm_plugin_set_configuration_parameter_t         * opencbm_plugin_set_configuration_parameter;
+
+    opencbm_plugin_adapter_reset_t              * opencbm_plugin_adapter_reset;           /*!< pointer to a opencbm_plugin_adapter_reset_t() function */
 
 } opencbm_plugin_t;
 

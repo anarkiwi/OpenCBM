@@ -21,8 +21,11 @@ volatile bool doDeviceReset;
 // Flag indicating the main loop should reset the drive bus
 volatile bool pendingReset;
 
+// Flag indicating the main loop should reinitialize the adapter
+volatile bool adapterReset;
+
 // I/O deadline in 100 ms timer ticks (0 disables it) and its state
-static volatile uint16_t ioTimeout = 300;
+static volatile uint16_t ioTimeout = XUM_IO_TIMEOUT;
 static uint16_t ioTicks;
 static bool ioArmed;
 volatile bool ioTimedOut;
@@ -78,6 +81,8 @@ main(void)
         TimerWorker();
         if (doDeviceReset) {
             usbIoReset();
+            if (adapterReset)
+                AdapterReset();
             ioTimedOut = false;
             doDeviceReset = false;
         }
@@ -85,6 +90,10 @@ main(void)
             pendingReset = false;
             if (cmds != NULL)
                 cmds->cbm_reset(false);
+        }
+        ATOMIC_BLOCK(ATOMIC_RESTORESTATE) {
+            if (!doDeviceReset)
+                adapterReset = false;
         }
 
         if (USB_DeviceState >= DEVICE_STATE_Configured) {

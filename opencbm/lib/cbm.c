@@ -212,6 +212,7 @@ static struct plugin_read_pointer plugin_pointer_to_read_optional[] =
     PLUGIN_POINTER_DEF(opencbm_plugin_pp_write),
     PLUGIN_POINTER_DEF(opencbm_plugin_get_list_of_configuration_parameter),
     PLUGIN_POINTER_DEF(opencbm_plugin_set_configuration_parameter),
+    PLUGIN_POINTER_DEF(opencbm_plugin_adapter_reset),
     PLUGIN_POINTER_END()
 };
 
@@ -1405,6 +1406,40 @@ cbm_reset(CBM_FILE HandleDevice)
     FUNC_PARAM((DBG_PREFIX "HandleDevice = %p", HandleDevice));
 
     FUNC_LEAVE_INT(Plugin_information.Plugin.opencbm_plugin_reset(HandleDevice));
+}
+
+/*! \brief RESET the adapter itself
+
+ This function aborts any transfer in progress and returns the adapter
+ to its state after initialization, without a USB reset.
+
+ \param HandleDevice
+   A CBM_FILE which contains the file handle of the driver.
+
+ \param ResetBus
+   Nonzero to also perform a hardware RESET of all devices on the bus.
+
+ \return
+   0 on success, else failure, also if the plugin or adapter does not
+   support it.
+
+ If cbm_driver_open() did not succeed, it is illegal to
+ call this function.
+*/
+
+int CBMAPIDECL
+cbm_adapter_reset(CBM_FILE HandleDevice, int ResetBus)
+{
+    int ret = -1;
+
+    FUNC_ENTER();
+
+    FUNC_PARAM((DBG_PREFIX "HandleDevice = %p, ResetBus = %d", HandleDevice, ResetBus));
+
+    if (Plugin_information.Plugin.opencbm_plugin_adapter_reset)
+        ret = Plugin_information.Plugin.opencbm_plugin_adapter_reset(HandleDevice, ResetBus);
+
+    FUNC_LEAVE_INT(ret);
 }
 
 

@@ -33,6 +33,7 @@ static uint8_t currState;
 // Nibtools command state. See nib_parburst_read/write_checked()
 static bool suppressNibCmd;
 static uint8_t savedNibWrites[4], *savedNibWritePtr;
+static uint8_t nibCmdIdx;
 
 // Protocol handlers to use, set in cbm_init().
 struct ProtocolFunctions *cmds;
@@ -158,6 +159,32 @@ usbIoReset(void)
     usbDataLen = 0;
     if ((currState & XUM1541_TAPE_PRESENT) == 0)
         iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+}
+
+/*
+ * Return the adapter to its state after cbm_init(), keeping the bus mode,
+ * after usbIoReset(). Tape mode was reset by XUM1541_ADAPTER_RESET itself.
+ */
+void
+AdapterReset(void)
+{
+    suppressNibCmd = false;
+    savedNibWritePtr = savedNibWrites;
+    nibCmdIdx = 0;
+    eoi = 0;
+    IoArm(false);
+    IoSetTimeout(XUM_IO_TIMEOUT);
+    set_status(STATUS_READY);
+    if ((currState & XUM1541_TAPE_PRESENT) != 0)
+        return;
+#ifdef IEEE_SUPPORT
+    if ((currState & XUM1541_IEEE488_PRESENT) != 0) {
+        ieee_init_lines();
+        return;
+    }
+#endif
+    board_init_iec();
+    iec_init();
 }
 
 int8_t
@@ -550,7 +577,6 @@ static int
 nib_check_write(uint8_t data)
 {
     static uint8_t mnibCmd[] = { 0x00, 0x55, 0xaa, 0xff };
-    static uint8_t cmdIdx;
 
     /*
      * If cmd is a write track, save up to 4 bytes of data that will be
@@ -562,18 +588,18 @@ nib_check_write(uint8_t data)
     }
 
     // State machine to match 00,55,aa,ff,XX where XX is read/write track.
-    if (cmdIdx == sizeof(mnibCmd)) {
+    if (nibCmdIdx == sizeof(mnibCmd)) {
         if (data == 0x03 || data == 0x04 || data == 0x05 || data == 0x0b ||
             data == 0x13 || data == 0x14 || data == 0x16) {
             suppressNibCmd = true;
         }
-        cmdIdx = 0;
-    } else if (mnibCmd[cmdIdx] == data) {
-        cmdIdx++;
+        nibCmdIdx = 0;
+    } else if (mnibCmd[nibCmdIdx] == data) {
+        nibCmdIdx++;
     } else {
-        cmdIdx = 0;
+        nibCmdIdx = 0;
         if (mnibCmd[0] == data)
-            cmdIdx++;
+            nibCmdIdx++;
     }
 
     return true;
@@ -680,7 +706,19 @@ usbHandleControl(uint8_t cmd, uint8_t *replyBuf)
     case XUM1541_ABORT:
         if (USB_ControlRequest.wValue != 0)
             SetAbortState();
-        replyBuf[0] = doDeviceReset ? 1 : 0;
+        replyBuf[0] = (doDeviceReset || adapterReset) ? 1 : 0;
+        return 1;
+    case XUM1541_ADAPTER_RESET:
+        if ((currState & XUM1541_TAPE_PRESENT) != 0) {
+            if (cmds != NULL)
+                cmds->cbm_reset(false);
+        } else if ((currState & XUM1541_IEEE488_PRESENT) == 0)
+            iec_release(IO_ATN | IO_CLK | IO_DATA | IO_SRQ);
+        adapterReset = true;
+        if ((USB_ControlRequest.wValue & XUM_ADAPTER_RESET_BUS) != 0)
+            pendingReset = true;
+        SetAbortState();
+        replyBuf[0] = 1;
         return 1;
     case XUM1541_SET_TIMEOUT:
         IoSetTimeout(USB_ControlRequest.wValue);

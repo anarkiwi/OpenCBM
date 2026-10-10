@@ -591,6 +591,38 @@ xum1541_resync(struct opencbm_usb_handle *HandleXum1541)
     return xum1541_unwind(HandleXum1541, 1);
 }
 
+/*! \brief Reset the adapter's own state without a USB reset
+
+ \param HandleXum1541
+   A XUM1541_HANDLE which contains the file handle of the USB device.
+
+ \param flags
+   XUM_ADAPTER_RESET_BUS to also reset the drives, else 0.
+
+ \return
+   0 on success, -1 on error, also if the firmware is older than version 13.
+
+ Aborts any transfer, waits for the firmware to reinitialize, clears the
+ stalls and restores the firmware I/O timeout.
+*/
+int
+xum1541_adapter_reset(struct opencbm_usb_handle *HandleXum1541, unsigned int flags)
+{
+    unsigned char busy;
+
+    if (DeviceFirmwareVersion < 13)
+        return -1;
+    xum1541_dbg(0, "resetting adapter, flags %x", flags);
+    if (xum1541_control(HandleXum1541, 1, XUM1541_ADAPTER_RESET, flags,
+        &busy, sizeof(busy)) != sizeof(busy)) {
+        fprintf(stderr, "USB error in xum1541_adapter_reset\n");
+        return -1;
+    }
+    if (xum1541_unwind(HandleXum1541, 0) != 0)
+        return -1;
+    return xum1541_set_timeout(HandleXum1541, fw_timeout_ms);
+}
+
 /*! \brief Initialize the xum1541 device
   This function tries to find and identify the xum1541 device.
 

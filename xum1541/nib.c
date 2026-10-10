@@ -26,7 +26,7 @@ nib_parburst_read()
     // Set ATN and wait for drive to release DATA
     iec_set_release(IO_ATN, IO_DATA|IO_CLK);
     DELAY_US(5);
-    while (iec_get(IO_DATA))
+    while (iec_get(IO_DATA) && !doDeviceReset)
         ;
 
     // Byte ready -- read it and release ATN
@@ -36,7 +36,7 @@ nib_parburst_read()
 
     // Wait for the drive to pull DATA again. Delay for a bit afterwards
     // to keep the next read from being too close together.
-    while (!iec_get(IO_DATA))
+    while (!iec_get(IO_DATA) && !doDeviceReset)
         ;
     DELAY_US(5);
     return data;
@@ -47,8 +47,10 @@ int8_t
 nib_read_handshaked(uint8_t *data, uint8_t toggle)
 {
     // Wait for a byte to be ready (data toggle matches expected value).
-    while (iec_get(IO_DATA) != toggle)
-        ;
+    while (iec_get(IO_DATA) != toggle) {
+        if (doDeviceReset)
+            return -1;
+    }
 
     // Read it directly from the port without debouncing.
     *data = iec_pp_read();
@@ -69,7 +71,7 @@ nib_parburst_write(uint8_t data)
 
     iec_set_release(IO_ATN, IO_DATA|IO_CLK);
     DELAY_US(5);
-    while (iec_get(IO_DATA))
+    while (iec_get(IO_DATA) && !doDeviceReset)
         ;
 
     iec_pp_write(data);
@@ -84,7 +86,7 @@ nib_parburst_write(uint8_t data)
      * a while.
      */
     DELAY_US(10);
-    while (!iec_get(IO_DATA))
+    while (!iec_get(IO_DATA) && !doDeviceReset)
         ;
 
     // Read from parallel port, making the outputs inputs. (critical)
@@ -96,8 +98,10 @@ int8_t
 nib_write_handshaked(uint8_t data, uint8_t toggle)
 {
     // Wait for drive to be ready (data toggle matches expected value).
-    while (iec_get(IO_DATA) != toggle)
-        ;
+    while (iec_get(IO_DATA) != toggle) {
+        if (doDeviceReset)
+            return -1;
+    }
 
     // Write out the data value via parallel.
     iec_pp_write(data);
@@ -120,7 +124,7 @@ nib_srqburst_read()
     iec_release(IO_ATN);
 
     // Wait for the drive to release CLK.
-    while (iec_get(IO_CLK))
+    while (iec_get(IO_CLK) && !doDeviceReset)
         ;
 
     return data;
@@ -135,7 +139,7 @@ nib_srqburst_write(uint8_t data)
     DELAY_US(5);
 
     // Wait for the drive to set CLK.
-    while (!iec_get(IO_CLK))
+    while (!iec_get(IO_CLK) && !doDeviceReset)
         ;
 
     // Send data byte via fast serial
@@ -146,7 +150,7 @@ nib_srqburst_write(uint8_t data)
     iec_release(IO_ATN);
 
     // Wait for the drive to release CLK.
-    while (iec_get(IO_CLK))
+    while (iec_get(IO_CLK) && !doDeviceReset)
         ;
 }
 

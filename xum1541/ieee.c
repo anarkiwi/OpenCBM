@@ -219,6 +219,12 @@ static void IeeeInitLines(void)
     last_byte   = -1;                // -1=kein byte
 }
 
+// Release all lines as ieee_init() leaves them.
+void ieee_init_lines(void)
+{
+    IeeeInitLines();
+}
+
 //
 // Check if device is connected to IEEE-488 port (device pullups)
 // This function needs to run quickly so it won't delay IEC initialization
@@ -568,7 +574,10 @@ static int8_t IeeeByteOut(uint8_t by)
     }
 
     while(!IEEE_NRFD)                                // WAIT WHILE NRFD
-        wdt_reset();                                    // watchdog
+    {
+        if (!TimerWorker())
+            return 1;
+    }
 
     IeeeDataOut(~by);                                // OUTPUT!
     _delay_us(5);
@@ -636,7 +645,10 @@ static uint8_t IeeeIn(void)
     IeeeNdac(1);                    // data accepted!
 
     while(!IEEE_DAV)                // WAIT FOR DAV HIGH
-        wdt_reset();
+    {
+        if (!TimerWorker())
+            break;
+    }
 
     IeeeNdac(0);                    // NDAC low
     return rc;

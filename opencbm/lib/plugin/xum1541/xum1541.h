@@ -88,6 +88,7 @@ int xum1541_read_ext(struct opencbm_usb_handle *HandleXum1541, unsigned char mod
 int xum1541_tap_break(struct opencbm_usb_handle *HandleXum1541);
 int xum1541_set_timeout(struct opencbm_usb_handle *HandleXum1541, unsigned int ms);
 int xum1541_resync(struct opencbm_usb_handle *HandleXum1541);
+int xum1541_adapter_reset(struct opencbm_usb_handle *HandleXum1541, unsigned int flags);
 unsigned int xum1541_timeout(int isTapeCmd, size_t bytes);
 
 // Firmware version reported by XUM1541_INIT

@@ -105,7 +105,7 @@ iec_srq_read(void)
     data = 0;
     for (i = 8; i != 0; --i) {
         // Wait for the drive to pull IO_SRQ.
-        while (!iec_get(IO_SRQ))
+        while (!iec_get(IO_SRQ) && !doDeviceReset)
             ;
 
         // Wait for drive to release SRQ, then delay another 375 ns for DATA

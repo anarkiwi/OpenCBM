@@ -511,6 +511,39 @@ static int do_reset(CBM_FILE fd, OPTIONS * const options)
 }
 
 /*
+ * Reset the adapter, and with --bus the drives too
+ */
+static int do_adapter_reset(CBM_FILE fd, OPTIONS * const options)
+{
+    int bus = 0;
+    int c;
+    static const char short_options[] = "+b";
+    static struct option long_options[] =
+    {
+        {"bus", no_argument, NULL, 'b' },
+        {NULL,  no_argument, NULL, 0   }
+    };
+
+    while ((c = process_individual_option(options, short_options, long_options)) != EOF)
+    {
+        switch (c)
+        {
+        case 'b':
+            bus = 1;
+            break;
+
+        default:
+            return 1;
+        }
+    }
+
+    if (check_if_parameters_ok(options))
+        return 1;
+
+    return cbm_adapter_reset(fd, bus) != 0;
+}
+
+/*
  * Simple wrapper for srq
  */
 static int do_iec_srq(CBM_FILE fd, OPTIONS * const options)
@@ -1868,6 +1901,13 @@ static struct prog prog_table[] =
     {1, "reset"   , PA_UNSPEC,  do_reset   , "",
         "reset all drives on the IEC bus",
         "This command performs a (physical) reset of all drives on the IEC bus." },
+
+    {1, "adapterreset", PA_UNSPEC, do_adapter_reset, "[-b|--bus]",
+        "reset the adapter itself",
+        "This command aborts any transfer in progress and returns the adapter to\n"
+        "its state after initialization, without a USB reset.\n"
+        "\n"
+        "Use option --bus to also reset all drives on the bus.\n" },
 
     {1, "detect"  , PA_UNSPEC,  do_detect  , "[-p|--parcheck] [-v|--verbose] [<device_start> [<device_end>]]",
         "detect drives on the IEC bus\n",

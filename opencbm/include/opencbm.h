@@ -164,6 +164,7 @@ EXTERN int CBMAPIDECL cbm_get_eoi(CBM_FILE f);
 EXTERN int CBMAPIDECL cbm_clear_eoi(CBM_FILE f);
 
 EXTERN int CBMAPIDECL cbm_reset(CBM_FILE f);
+EXTERN int CBMAPIDECL cbm_adapter_reset(CBM_FILE f, int reset_bus);
 
 EXTERN unsigned char CBMAPIDECL cbm_pp_read(CBM_FILE f);
 EXTERN void CBMAPIDECL cbm_pp_write(CBM_FILE f, unsigned char c);

@@ -15,7 +15,7 @@
 #define XUM1541_PID                 0x0504
 
 // XUM1541_INIT reports this versions
-#define XUM1541_VERSION             12
+#define XUM1541_VERSION             13
 #define XUM1541_MINIMUM_COMPATIBLE_VERSION 7
 
 // USB parameters for descriptor configuration
@@ -35,6 +35,16 @@
 #define XUM1541_LIBCVER             (XUM1541_ECHO + 8)
 #define XUM1541_ABORT               (XUM1541_ECHO + 9)
 #define XUM1541_SET_TIMEOUT         (XUM1541_ECHO + 10)
+#define XUM1541_ADAPTER_RESET       (XUM1541_ECHO + 11)
+
+/*
+ * XUM1541_ADAPTER_RESET (version 13) aborts any transfer, stalls both bulk
+ * endpoints and returns the adapter to its state after initialization; the
+ * reply byte is 1. XUM1541_ABORT with wValue 0 reports 1 until it is done,
+ * then the host clears both stalls. wValue XUM_ADAPTER_RESET_BUS also resets
+ * the drives (IEC RESET or IEEE IFC) before it is done.
+ */
+#define XUM_ADAPTER_RESET_BUS       0x01
 
 // Adapter capabilities, but device may not support them
 #define XUM1541_CAP_CBM             0x01 // supports CBM commands

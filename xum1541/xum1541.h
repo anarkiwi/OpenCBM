@@ -22,6 +22,12 @@
 
 //#include "xum1541_types.h"      // Version and protocol definitions
 
+extern volatile uint8_t eoi;
+extern volatile bool doDeviceReset;
+extern volatile bool pendingReset;
+extern volatile bool adapterReset;
+extern volatile bool ioTimedOut;
+
 // All supported models. Add new ones below.
 #define USBKEY                  0
 #define BUMBLEB                 1
@@ -95,6 +101,9 @@
 #define STATUS_ACTIVE           2
 #define STATUS_ERROR            3
 
+// Default I/O deadline in 100 ms timer ticks
+#define XUM_IO_TIMEOUT          300
+
 #ifdef TAPE_SUPPORT
 
 // Tape State Register: Current state of tape operations
@@ -164,11 +173,6 @@ enum {
     EEPROM_SerialNumber = 0,
 };
 
-extern volatile uint8_t eoi;
-extern volatile bool doDeviceReset;
-extern volatile bool pendingReset;
-extern volatile bool ioTimedOut;
-
 // Board status handling
 uint8_t get_status(void);
 void set_status(uint8_t status);
@@ -189,6 +193,7 @@ uint8_t AbortOnReset(void);
 void usbInitIo(uint16_t len, uint8_t dir);
 void usbIoDone(void);
 void usbIoReset(void);
+void AdapterReset(void);
 int8_t usbSendByte(uint8_t data);
 int8_t usbRecvByte(uint8_t *data);
 void Set_usbDataLen(uint16_t Len);
@@ -214,6 +219,7 @@ struct ProtocolFunctions *cbm_init(void);
 struct ProtocolFunctions *iec_init(void);
 #ifdef IEEE_SUPPORT
 struct ProtocolFunctions *ieee_init(void);
+void ieee_init_lines(void);
 #endif
 
 /*

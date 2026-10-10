@@ -572,6 +572,25 @@ opencbm_plugin_reset(CBM_FILE HandleDevice)
     return xum1541_control_msg((struct opencbm_usb_handle *)HandleDevice, XUM1541_RESET);
 }
 
+/*! \brief Reset the adapter's own state
+
+ \param HandleDevice
+   A CBM_FILE which contains the file handle of the driver.
+
+ \param ResetBus
+   Nonzero to also reset the drives on the bus.
+
+ \return
+   0 on success, -1 on error, also if the firmware is older than version 13.
+*/
+
+int CBMAPIDECL
+opencbm_plugin_adapter_reset(CBM_FILE HandleDevice, int ResetBus)
+{
+    return xum1541_adapter_reset((struct opencbm_usb_handle *)HandleDevice,
+        ResetBus ? XUM_ADAPTER_RESET_BUS : 0);
+}
+
 
 /*-------------------------------------------------------------------*/
 /*--------- LOW-LEVEL PORT ACCESS -----------------------------------*/
