@@ -688,6 +688,9 @@ __asm__(
     "2:\n"
     ".endm\n");
 
+_Static_assert(SRQ_STREAM_POLLS == 20000UL * 16 / X_POLL,
+               "SRQ_STREAM_POLLS must be computed in long arithmetic");
+
 static __attribute__((noinline)) uint16_t srq_stream8(uint16_t n, uint8_t c,
                                                       uint16_t *left) {
   uint8_t s, s0, b, t, code;
